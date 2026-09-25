@@ -1,0 +1,88 @@
+name: ETL fato_pedidos (full diário)
+
+# Run FULL: detalha TODAS as NFs da janela (sem ETL_SKIP_NF_CARREGADAS).
+# É o run agendado de produção — seguro (DELETE escopado + UPSERT reinsere tudo).
+# Janela = 1º dia do mês anterior (ou TINY_API_INICIO). ~22 min/run.
+
+on:
+  schedule:
+    # 06:00 BRT nominal (UTC = BRT+3). Alvo pedido pelo Italo em 31/ago: 1x/dia, entre 6h e 7h.
+    #
+    # Por que 09:00 UTC e não mais cedo: o slot mais cedo do intraday (etl-fato-pedidos.yml) é
+    # 11:00 UTC, e os dois compartilham o `concurrency: etl-fato-pedidos` com
+    # cancel-in-progress: false — se o full atrasar até 11:00 ele ENFILEIRA atrás do intraday e
+    # atrasa mais ainda (foi o que cancelou o run de 28/ago). 09:00 UTC dá ~2h de folga.
+    #
+    # ⚠️ Atraso do GitHub (free) é best-effort e varia MUITO por conta. Medido em 31/ago:
+    #   b2b-gogroup  → 25-51 min de atraso, todo dia (17-26/ago)
+    #   italo-mgl    → ~2h em julho, mas 5h39-6h em 29-30/ago
+    # Com o atraso do italo-mgl nesse patamar, nenhum valor de cron garante a janela 6h-7h.
+    # Pontualidade real só com gatilho externo (pg_cron/cron-job.org → workflow_dispatch).
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      diff_delete:
+        description: 'Diff-delete anti-bloat (PADRÃO ON desde 26/jul, validado — dado idêntico). Desmarcar força o delete-tudo antigo (debug).'
+        type: boolean
+        default: true
+
+concurrency:
+  group: etl-fato-pedidos      # não roda junto com o trigger manual
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    # Este workflow existe em mais de uma conta (italo-mgl/torre_etl, b2b-gogroup/torre_b2b,
+    # leandroperruci-web/...) porque o push vai pra todas. Sem guarda, o `schedule` disparava em
+    # TODAS — medido em 31/ago: b2b rodava ~07:30 UTC e italo-mgl ~09:00-13:00 UTC, ou seja 2x/dia
+    # em horários diferentes. Era a causa do "horário aleatório".
+    #
+    # A variável é PRÓPRIA deste workflow (não a RODIZIO_ATIVO compartilhada dos robôs de foto):
+    # o full tem que rodar numa conta específica, e RODIZIO_ATIVO é repo-wide, então reusá-la
+    # amarraria o full à mesma conta dos robôs. workflow_dispatch continua livre em qualquer
+    # espelho — rodada manual é decisão de uma pessoa.
+    #
+    # ⚠️ SETUP OBRIGATÓRIO: setar a variável de repositório em UMA conta só.
+    #    gh variable set ETL_FATO_PEDIDOS_FULL_ATIVO --body true -R italo-mgl/torre_etl
+    #    (e NÃO setar nos espelhos). Sem ela setada em lugar nenhum, o full não roda agendado.
+    # Variavel PROPRIA deste repo. RODIZIO_ATIVO nao serve: ela e compartilhada com os
+    # robos do Mercos, e liga-la aqui teria significado ambiguo.
+    # PERIGO DE DOBRA: concurrency e POR REPO. Se o repo antigo tambem estiver com a
+    # guarda ligada, o ETL roda duas vezes no MESMO banco. Ligar aqui so depois de
+    # desligar la.
+    if: github.event_name != 'schedule' || vars.ETL_FATO_PEDIDOS_ATIVO == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: etl/package-lock.json
+
+      - name: Install ETL dependencies
+        working-directory: etl
+        run: npm ci
+
+      - name: Run ETL fato_pedidos (FULL — detalha todas)
+        working-directory: etl
+        env:
+          METABASE_URL: ${{ secrets.METABASE_URL }}
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          TINY_TOKEN_ES: ${{ secrets.TINY_TOKEN_ES }}
+          TINY_TOKEN_RJ: ${{ secrets.TINY_TOKEN_RJ }}
+          TINY_API_INICIO: ${{ secrets.TINY_API_INICIO }}
+          # SEM ETL_SKIP_NF_CARREGADAS → re-detalha todas as NFs do período (seguro).
+          # diff-delete é o PADRÃO (validado 26/jul: dado idêntico ao delete-tudo, faturado bate
+          # ao centavo, 0 linhas removidas indevidamente — não gera mais o bloat de ~45MB).
+          # Agendado sempre ON; run manual pode DESMARCAR p/ forçar o delete-tudo antigo (debug).
+          ETL_DIFF_DELETE: ${{ github.event.inputs.diff_delete == 'false' && 'false' || 'true' }}
+        run: npx tsx fato-pedidos/index.ts

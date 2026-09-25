@@ -4,14 +4,23 @@ Repo **publico** cuja unica funcao e hospedar workflows agendados da Torre B2B.
 Publico porque repo publico tem minuto de Actions GitHub-hosted **ilimitado**; privado
 nao tem, e o consumo medido da Torre (~3.900 min/mes) estoura o teto de 3.000 em ~19 dias.
 
-## O que este repo NAO tem
+## O que tem aqui -- e o que nunca pode entrar
 
-**Codigo.** Os workflows fazem checkout do repo privado `b2b-gogroup/torre_b2b` e rodam
-de la. Se o codigo morasse aqui, ele seria publico -- e o ETL importa ~20 modulos de
-`lib/` que carregam politica de credito, regua de avaliacao da IA e formula de KPI de
-inadimplencia. O passo 4 do guard impede que isso aconteca por descuido.
+Tem o ETL de `fato_pedidos` (`etl/fato-pedidos/` + `etl/shared/`, 19 arquivos, 260 KB) e
+mais nada. Esse conjunto foi escolhido por medicao: ele **nao importa nada de `lib/` nem
+de `app/`** -- so `etl/shared/*` e `pg` --, e a auditoria antes de trazer deu **zero
+credencial, zero nome de cliente**; os CNPJ que aparecem sao os da **propria empresa**
+(filiais), que sao registro publico.
 
-## Os quatro invariantes (travados em `guard-invariantes.yml`)
+Por isso **nao existe deploy key aqui**. A alternativa era manter o codigo no repo
+privado e busca-lo no checkout, mas a chave que faz isso destranca o `torre_b2b`
+inteiro: se ela vazar por um log derivado, vaza tudo. Sem chave, nao ha essa cadeia.
+
+**O que nunca entra:** `lib/`, `app/`, `db/`, `docs/`, `components/`, `scripts/`. E ali que
+moram politica de credito, regua de avaliacao da IA, formula de inadimplencia e CNPJ de
+cliente em migration. A checagem 5 do guard barra.
+
+## Os seis invariantes (travados em `guard-invariantes.yml`)
 
 **1. Nenhum trigger que entrega secret a gente de fora.** Num repo publico qualquer
 pessoa pode abrir issue, comentar, dar star e forkar. Estes eventos rodam no contexto do
@@ -36,7 +45,13 @@ porque dependem de sair de fora do firewall da empresa).
 
 **3. Nenhum arquivo de credencial versionado.**
 
-**4. Este repo e casca.** So `.github/`, `README.md` e `.gitignore`.
+**4. So os caminhos da allowlist.** `.github/`, `README.md`, `.gitignore` e o conjunto
+do ETL de fato_pedidos.
+
+**5. Nenhum modulo sensivel da Torre** (`lib/`, `app/`, `db/`, `docs/`, ...).
+
+**6. `package.json` e `package-lock.json` em sincronia** -- fora de sincronia o `npm ci`
+quebra so na hora do run agendado.
 
 ## O que o mascaramento do GitHub cobre -- e o que nao cobre
 
@@ -46,19 +61,6 @@ URL montada com ele em query string, JSON que o contenha, stack trace que despej
 
 Antes de trazer um workflow para ca, confira que o caminho dele nao imprime CNPJ, nome
 de cliente, valor, nem monta credencial dentro de URL.
-
-## Como o codigo privado e alcancado
-
-`actions/checkout` com **deploy key read-only** registrada em `torre_b2b`, nunca um PAT:
-a deploy key e escopada a um repo so, e revogavel numa chamada. Um PAT com escopo `repo`
-daria escrita em todos os repos da conta se vazasse.
-
-```yaml
-- uses: actions/checkout@v4
-  with:
-    repository: b2b-gogroup/torre_b2b
-    ssh-key: ${{ secrets.TORRE_DEPLOY_KEY }}
-```
 
 ## Endurecimento aplicado no repo
 
@@ -70,3 +72,21 @@ daria escrita em todos os repos da conta se vazasse.
 
 Workflow novo aqui: so `schedule` + `workflow_dispatch`, sem artifact, sem codigo.
 O guard falha o push se qualquer uma das quatro for violada.
+
+## Migracao -- o perigo e rodar em dois lugares
+
+`concurrency` e **por repositorio**. Se este repo e o antigo estiverem os dois com a
+guarda ligada, o ETL roda **duas vezes no mesmo banco**, possivelmente em paralelo.
+
+Ordem obrigatoria:
+
+1. cadastrar os secrets aqui
+2. testar por `workflow_dispatch` com `ETL_FATO_PEDIDOS_ATIVO` **ainda ausente** (o
+   schedule nao dispara) e ler o log inteiro procurando CNPJ, nome de cliente, valor e
+   credencial montada dentro de URL
+3. **desligar no repo antigo**: `gh variable delete RODIZIO_ATIVO` e
+   `gh variable delete ETL_FATO_PEDIDOS_FULL_ATIVO`
+4. so entao `gh variable set ETL_FATO_PEDIDOS_ATIVO --body true` aqui
+5. e so depois de tudo verde, virar o repo publico
+
+O passo 2 nao da para pular: depois de publico, log de run e permanente e indexavel.

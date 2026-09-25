@@ -1,0 +1,30 @@
+{
+  "name": "torre-performance-etl",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fato-pedidos": "tsx fato-pedidos/index.ts",
+    "oportunidades": "tsx oportunidades/index.ts",
+    "mercos-sheets": "tsx mercos-sheets/index.ts",
+    "produto-fotos": "tsx produto-fotos/index.ts",
+    "produto-fotos-drive": "tsx produto-fotos-drive/index.ts",
+    "update-grupo-segmento": "tsx scripts/update-grupo-segmento.ts",
+    "operacional-auto-baixa": "tsx operacional-auto-baixa/index.ts",
+    "rd-conversas": "tsx rd-conversas/index.ts",
+    "rd-conversas-lote": "tsx rd-conversas/lote.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.47.0",
+    "googleapis": "^140.0.0",
+    "node-jose": "^2.2.0",
+    "openai": "^6.49.0",
+    "pg": "^8.13.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node-jose": "^1.1.13",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -52,12 +52,26 @@ jobs:
             exit 1
           fi
 
-      - name: 4. o repo e casca -- codigo vem do privado no checkout
+      - name: 4. so os caminhos da allowlist
         if: always()
         run: |
-          fora=$(git ls-files | grep -vE '^(\.github/|README\.md|\.gitignore)' || true)
+          PERM='^(\.github/|README\.md$|\.gitignore$|etl/fato-pedidos/|etl/shared/|etl/(package\.json|package-lock\.json|tsconfig\.json)$)'
+          fora=$(git ls-files | grep -vE "$PERM" || true)
           if [ -n "$fora" ]; then
-            echo "::error::este repo so pode conter workflows e README. O codigo vem do repo privado no passo de checkout -- se comecar a morar aqui, ele fica publico."
+            echo "::error::arquivo fora da allowlist. Este repo e PUBLICO: so entra o ETL de fato_pedidos, que foi auditado (zero credencial, zero nome de cliente, CNPJ so da propria empresa)."
             echo "$fora"
             exit 1
           fi
+
+      - name: 5. nenhum modulo sensivel da Torre
+        if: always()
+        run: |
+          if git ls-files | grep -nE '^(lib/|app/|components/|db/|docs/|scripts/)'; then
+            echo "::error::lib/ app/ db/ docs/ carregam politica de credito, regua da IA, formula de inadimplencia e CNPJ de cliente em migration. Nada disso pode virar publico."
+            exit 1
+          fi
+
+      - name: 6. package.json e lock em sincronia
+        if: always()
+        working-directory: etl
+        run: npm ci --dry-run
