@@ -1,0 +1,60 @@
+name: guard-invariantes
+
+# Este repo e (ou vai ser) PUBLICO e guarda credencial de producao nos secrets.
+# As tres checagens abaixo sao o que separa "seguro" de "vazou". Elas rodam em todo
+# push e todo PR, e falham fechando -- regra que depende de alguem lembrar nao e regra.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 1. nenhum trigger que da secret para gente de fora
+        run: |
+          PROIB='pull_request_target|issue_comment|issues|watch|fork|discussion|discussion_comment'
+          ruim=0
+          for f in .github/workflows/*.yml; do
+            case "$(basename "$f")" in guard-invariantes.yml) continue;; esac
+            if grep -nE "^[[:space:]]{2}($PROIB):" "$f"; then
+              echo "::error file=$f::trigger proibido. Estes eventos rodam no contexto do repo BASE, com acesso aos secrets, e num repo publico qualquer pessoa de fora consegue dispara-los. So schedule, workflow_dispatch e workflow_run sao permitidos."
+              ruim=1
+            fi
+          done
+          exit $ruim
+
+      - name: 2. nenhum upload de artifact
+        run: |
+          ruim=0
+          for f in .github/workflows/*.yml; do
+            case "$(basename "$f")" in guard-invariantes.yml) continue;; esac
+            if grep -nE "upload-artifact" "$f"; then
+              echo "::error file=$f::artifact de repo publico e baixavel por qualquer um por 90 dias. Screenshot e stdout dos robos carregam CNPJ, nome de cliente e limite de credito."
+              ruim=1
+            fi
+          done
+          exit $ruim
+
+      - name: 3. nenhum arquivo de credencial versionado
+        run: |
+          if git ls-files | grep -nE '(^|/)\.env($|\.)|\.pem$|\.p12$|id_rsa|credentials\.json'; then
+            echo "::error::arquivo com cara de credencial versionado num repo publico."
+            exit 1
+          fi
+
+      - name: 4. o repo e casca -- codigo vem do privado no checkout
+        run: |
+          fora=$(git ls-files | grep -vE '^(\.github/|README\.md|\.gitignore)' || true)
+          if [ -n "$fora" ]; then
+            echo "::error::este repo so pode conter workflows e README. O codigo vem do repo privado no passo de checkout -- se comecar a morar aqui, ele fica publico."
+            echo "$fora"
+            exit 1
+          fi
