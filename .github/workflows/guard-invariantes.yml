@@ -32,6 +32,7 @@ jobs:
           exit $ruim
 
       - name: 2. nenhum upload de artifact
+        if: always()
         run: |
           ruim=0
           for f in .github/workflows/*.yml; do
@@ -44,6 +45,7 @@ jobs:
           exit $ruim
 
       - name: 3. nenhum arquivo de credencial versionado
+        if: always()
         run: |
           if git ls-files | grep -nE '(^|/)\.env($|\.)|\.pem$|\.p12$|id_rsa|credentials\.json'; then
             echo "::error::arquivo com cara de credencial versionado num repo publico."
@@ -51,6 +53,7 @@ jobs:
           fi
 
       - name: 4. o repo e casca -- codigo vem do privado no checkout
+        if: always()
         run: |
           fora=$(git ls-files | grep -vE '^(\.github/|README\.md|\.gitignore)' || true)
           if [ -n "$fora" ]; then
