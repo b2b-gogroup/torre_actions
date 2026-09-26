@@ -356,6 +356,37 @@ export async function extractAll(): Promise<ExtractedData> {
         `Fonte crítica falhou e foi REPOSTA pelo Mercos: ${repostas.join(", ")} — ` +
           `a carga segue, mas com o db 48 fora. Ver etl/fato-pedidos/mercos-trat.ts.`
       );
+
+      // 🔴 O WARN acima NÃO BASTA, e essa é a lição desta rodada: o contorno deixa o run
+      // VERDE e o `fato_pedidos` FRESCO, então ele apaga o sinal mais alto de que o
+      // middleware está fora. Sobra log de GitHub Actions, que é exatamente onde ninguém
+      // olha — foi assim que dois ETLs de transporte ficaram 12 dias parados em set/2026.
+      //
+      // ⚠️ Nenhuma das cinco regras da auditoria pega este caso: a carga RODOU, não
+      // ENCOLHEU, o dado é de HOJE e não é pg_cron. A pergunta nova é "de ONDE veio o
+      // dado?", e só quem carregou sabe responder — daí o marcador explícito.
+      //
+      // ⚠️ Inferir pelo SKU sentinela foi medido e NÃO serve: 0 de 403 linhas do pipeline
+      // o carregavam, porque o RPA de itens tinha os itens de verdade.
+      //
+      // ⚠️ Falhar aqui NUNCA derruba a carga — o marcador é *sobre* a carga, não parte
+      // dela. Melhor perder o carimbo que perder a carga inteira por causa dele.
+      try {
+        const { getSupabaseAdmin } = await import("../shared/supabase-admin.js");
+        await getSupabaseAdmin()
+          .from("etl_fonte_reposta")
+          .insert(
+            repostas.map((fonte) => ({
+              fonte,
+              card: CARDS[fonte as keyof typeof CARDS] ?? null,
+              reposta_por: fonte === "protheusTrat" ? "mercos-trat" : "mercos-pipeline",
+              linhas: (data[fonte as SourceName] as unknown[] | undefined)?.length ?? null,
+              run: process.env.GITHUB_RUN_ID ?? null,
+            }))
+          );
+      } catch (e) {
+        logger.warn(`Não consegui carimbar etl_fonte_reposta (não-crítico): ${e}`);
+      }
     }
   }
 
