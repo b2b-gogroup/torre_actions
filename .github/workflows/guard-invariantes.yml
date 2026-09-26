@@ -104,3 +104,22 @@ jobs:
             fi
           done
           exit $ruim
+
+      - name: 9. nenhum workflow roda script que loga identidade de cliente
+        if: always()
+        run: |
+          # Medido nos logs REAIS do repo privado: repositor.py imprime 338 CNPJ e 262 nomes
+          # de cliente por execucao; decisor/escritor, 509 CNPJ. Em repo publico isso vira
+          # registro permanente de quem deve quanto. Nao da para mascarar com seguranca: CNPJ
+          # e regex, NOME de cliente e texto livre -- mascaramento parcial e pior que nenhum,
+          # porque cria confianca falsa. Esses workflows ficam no repo privado.
+          SUJOS='repositor\.py|decisor\.py|escritor\.py|orcamentista\.py|vincular_carteira_lote\.py|alvos_varredura\.py'
+          ruim=0
+          for f in .github/workflows/*.yml; do
+            case "$(basename "$f")" in guard-invariantes.yml) continue;; esac
+            if grep -nE "$SUJOS" "$f"; then
+              echo "::error file=$f::este script loga nome e CNPJ de cliente a cada execucao. Log de repo publico e permanente e indexavel."
+              ruim=1
+            fi
+          done
+          exit $ruim

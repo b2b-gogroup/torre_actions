@@ -6,11 +6,11 @@ nao tem, e o consumo medido da Torre (~3.900 min/mes) estoura o teto de 3.000 em
 
 ## O que tem aqui -- e o que nunca pode entrar
 
-Tem o ETL de `fato_pedidos` (`etl/fato-pedidos/` + `etl/shared/`) e o bloco
-Mercos/credito (`automacoes/`, 41 arquivos de codigo). Esse conjunto foi escolhido por medicao: ele **nao importa nada de `lib/` nem
-de `app/`** -- so `etl/shared/*` e `pg` --, e a auditoria antes de trazer deu **zero
-credencial, zero nome de cliente**; os CNPJ que aparecem sao os da **propria empresa**
-(filiais), que sao registro publico.
+Tem o ETL de `fato_pedidos` (`etl/`) e o robo de fotos do Mercos
+(`automacoes/mercos-fotos` + os dois modulos de login que ele importa). **32 arquivos.**
+
+Repartido por LOG, nao por conveniencia: vem para ca so o que tem log comprovadamente
+limpo. Medido em execucoes reais -- ETL e fotos: 0 CNPJ, 0 nome, 0 credencial.
 
 Por isso **nao existe deploy key aqui**. A alternativa era manter o codigo no repo
 privado e busca-lo no checkout, mas a chave que faz isso destranca o `torre_b2b`
@@ -36,7 +36,7 @@ era complementar.
 de teste dentro dos `.py` (VEMAC, KIMAKE, PERFUMARIA). Ordem de grandeza diferente das
 listas, e CNPJ e registro publico -- mas esta aqui declarado, nao esquecido.
 
-## Os oito invariantes (travados em `guard-invariantes.yml`)
+## Os nove invariantes (travados em `guard-invariantes.yml`)
 
 **1. Nenhum trigger que entrega secret a gente de fora.** Num repo publico qualquer
 pessoa pode abrir issue, comentar, dar star e forkar. Estes eventos rodam no contexto do
@@ -73,8 +73,12 @@ quebra so na hora do run agendado.
 A regra e por **extensao**, nao por nome: filtrar por nome ja deixou passar
 `cnpjs_bel.txt`, que estava fora de `carteiras/`.
 
-**8. Quem le `usuarios_mercos.csv` escreve o arquivo a partir do secret.** Sem o step,
-`decisor.py` quebra com FileNotFoundError so na hora do run agendado.
+**8. Quem le `usuarios_mercos.csv` escreve o arquivo a partir do secret.**
+
+**9. Nenhum workflow roda script que loga identidade de cliente.** Medido nos logs REAIS:
+`repositor.py` imprime **338 CNPJ e 262 nomes** por execucao, `decisor`/`escritor` **509
+CNPJ**. Nao da para mascarar com seguranca -- CNPJ e regex, **nome de cliente e texto
+livre**, e mascaramento parcial em log publico e pior que nenhum. Esses ficam no privado.
 
 ## O que o mascaramento do GitHub cobre -- e o que nao cobre
 
