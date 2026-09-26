@@ -1,0 +1,97 @@
+name: Mercos RJ — subir fotos de produto
+
+# Irmão de mercos-fotos.yml, SÓ pra empresa RJ (424524) -- separado de propósito,
+# em horário diferente. Achado 18/set/2026: tentar ES e RJ na MESMA execução (cada
+# uma com sessão/browser própria, sequencial, nunca simultânea de verdade) mesmo
+# assim derrubou login das duas -- o Mercos só aceita 1 sessão por usuário, e
+# MERCOS_EMAIL é a MESMA conta usada por este robô, por cadastro-rca-mercos, por
+# credito-limite-mercos (cron 19h30 BRT) e por qualquer pessoa logada no navegador
+# conferindo manualmente. Dois logins nossos perto um do outro (ou um login nosso
+# perto de uma pessoa logada) derrubam a sessão -- daí RJ virar workflow PRÓPRIO,
+# em horário bem separado do de ES (20h22 BRT) e do crédito (19h30 BRT), em vez de
+# `--filiais=es,rj` numa execução só. Ver automacoes/mercos-fotos/subir_fotos.py
+# (cabeçalho tem o histórico completo) e mercos-fotos.yml (ES).
+#
+# ⚠️ Até 22/set/2026 a VARREDURA em si nunca terminava pra RJ -- a tabela de produtos
+# desta empresa tem uma coluna extra ("visibility", ícone) na frente que ES não tem,
+# empurrando código/imagem pra posições diferentes; índice fixo (subir_fotos.py) lia
+# a coluna errada em TODA linha, classificava tudo como "foto ilegível" e o robô
+# nunca avançava (login OK, varredura travava/derrubava a sessão antes da página 5).
+# Corrigido lendo código/imagem por CONTEÚDO (regex de SKU + busca de <img> na linha
+# inteira), não por posição -- validado ponta a ponta em modo `dry` no mesmo dia:
+# 58 páginas / 867 SKUs vistos / 625 sem foto / 448 candidatos baixados, sem erro.
+# ✅ `aplicar` VALIDADO em 22/set/2026 (`--limit=1`, SKU AP01002/"Bisnaga Gelatina
+# Cachos Nutritivo 50g") -- conferido por screenshot real da tela do Mercos: "Todas
+# as fotos foram vinculadas", empresa BEAUTY HUB ATACADO (RJ), ID 424524. Primeira
+# escrita bem-sucedida de verdade nesta empresa. ⚠️ O cron aqui CONTINUA em
+# `modo=dry` de propósito -- 1 SKU confirmado não é o mesmo que confirmar o lote
+# inteiro (448 candidatos na 1ª varredura pós-fix); subir o default pra `aplicar`
+# é decisão de negócio (quantidade de escrita de uma vez só numa conta Mercos
+# compartilhada com outros robôs/pessoas), não consequência automática deste fix.
+# Enquanto isso, `workflow_dispatch` com `modo=aplicar` (+ `limit` opcional) já
+# funciona pra rodar sob demanda.
+#
+# Existe também no mirror italo-mgl/torre_etl (rodízio de Actions) -- o schedule só
+# dispara onde a variável de repositório RODIZIO_ATIVO estiver setada;
+# workflow_dispatch continua livre em qualquer espelho.
+
+on:
+  schedule:
+    - cron: '47 16 * * *'   # 13h47 BRT (UTC-3) -- longe do crédito (19h30) e do fotos ES (20h22)
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "test (só confere login/tela) | dry (varre+baixa, mostra o que subiria) | aplicar (sobe de verdade)"
+        type: choice
+        options: [test, dry, aplicar]
+        default: test
+      limit:
+        description: "Opcional — limita quantas fotos processar (teste em lote pequeno antes do total)"
+        required: false
+      forcar_marca:
+        description: "Opcional — CSV de marca_id (ex.: KS). Reenvia mesmo SKU que já tem foto no Mercos (fura a guarda de 'só sem foto'). Validar SEMPRE com limit=1 antes do lote inteiro."
+        required: false
+      forcar_skus:
+        description: "Opcional — CSV de SKUs exatos, mesma furada de guarda acima só pra esses SKUs."
+        required: false
+
+jobs:
+  subir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: github.event_name != 'schedule' || vars.MERCOS_ATIVO == 'true'
+    defaults:
+      run:
+        working-directory: automacoes/mercos-fotos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Subir fotos (RJ)
+        env:
+          PYTHONUNBUFFERED: "1"
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+          MERCOS_SENHA: ${{ secrets.MERCOS_SENHA }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_SENHA: ${{ secrets.GMAIL_SENHA }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          # ⚠️ 'aplicar' desde 23/set/2026 (decisão do usuário) -- era 'dry', ou seja o
+          # cron varria e reportava sem nunca enviar foto. Ligado só depois de o RJ
+          # voltar a funcionar: até 22/set a varredura abortava na página 1 (a coluna de
+          # código/imagem do RJ fica uma posição antes da do ES), então o robô daqui
+          # nunca tinha subido uma foto sequer. Ver mercos-fotos.yml pro histórico do ES.
+          ARGS="--modo=${{ inputs.modo || 'aplicar' }} --filiais=rj"
+          [ -n "${{ inputs.limit }}" ] && ARGS="$ARGS --limit=${{ inputs.limit }}"
+          [ -n "${{ inputs.forcar_marca }}" ] && ARGS="$ARGS --forcar-marca=${{ inputs.forcar_marca }}"
+          [ -n "${{ inputs.forcar_skus }}" ] && ARGS="$ARGS --forcar-skus=${{ inputs.forcar_skus }}"
+          python subir_fotos.py $ARGS

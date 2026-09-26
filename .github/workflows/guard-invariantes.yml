@@ -55,7 +55,7 @@ jobs:
       - name: 4. so os caminhos da allowlist
         if: always()
         run: |
-          PERM='^(\.github/|README\.md$|\.gitignore$|etl/fato-pedidos/|etl/shared/|etl/(package\.json|package-lock\.json|tsconfig\.json)$)'
+          PERM='^(\.github/|README\.md$|\.gitignore$|etl/fato-pedidos/|etl/shared/|etl/(package\.json|package-lock\.json|tsconfig\.json)$|automacoes/)'
           fora=$(git ls-files | grep -vE "$PERM" || true)
           if [ -n "$fora" ]; then
             echo "::error::arquivo fora da allowlist. Este repo e PUBLICO: so entra o ETL de fato_pedidos, que foi auditado (zero credencial, zero nome de cliente, CNPJ so da propria empresa)."
@@ -75,3 +75,32 @@ jobs:
         if: always()
         working-directory: etl
         run: npm ci --dry-run
+
+      - name: 7. nenhum arquivo de DADO em automacoes/
+        if: always()
+        run: |
+          # Codigo pode ser publico; lista pode nao. As carteiras (2.587 CNPJ de cliente
+          # por representante) e o cadastro de usuarios (75 nomes e e-mails) sairam daqui.
+          # Excluir por NOME de arquivo ja falhou uma vez -- cnpjs_bel.txt estava fora de
+          # carteiras/ e passou. A regra e por EXTENSAO, que nao depende de ninguem seguir
+          # convencao de nome.
+          achou=$(git ls-files automacoes/ | grep -E '\.(txt|csv|json|xlsx)$' | grep -v 'requirements\.txt$' || true)
+          if [ -n "$achou" ]; then
+            echo "::error::arquivo de dado em automacoes/. Dado vai em secret, nao no repo."
+            echo "$achou"; exit 1
+          fi
+
+      - name: 8. quem le o cadastro de usuarios escreve o cadastro
+        if: always()
+        run: |
+          # decisor.py, escritor.py e alvos_varredura.py leem usuarios_mercos.csv, que nao
+          # mora mais no repo. Workflow que roda um deles sem o step do secret quebra com
+          # FileNotFoundError so na hora do run agendado.
+          ruim=0
+          for f in .github/workflows/*.yml; do
+            case "$(basename "$f")" in guard-invariantes.yml) continue;; esac
+            if grep -qE 'decisor\.py|escritor\.py|alvos_varredura\.py' "$f"; then
+              grep -q 'USUARIOS_MERCOS_CSV' "$f" || { echo "::error file=$f::le usuarios_mercos.csv e nao escreve o arquivo a partir do secret."; ruim=1; }
+            fi
+          done
+          exit $ruim

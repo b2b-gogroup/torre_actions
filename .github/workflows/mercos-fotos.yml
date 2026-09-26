@@ -1,0 +1,110 @@
+name: Mercos — subir fotos de produto
+
+# Sobe fotos de produto (dim_produto_foto, já sincronizada 1x/dia do card Metabase 28639
+# "Stg Shopify Products" por etl-produto-fotos.yml) pra tela nativa "Importar fotos"
+# do Mercos, via Playwright -- reaproveita o mesmo login+2FA do robô
+# automacoes/cadastro-rca-mercos. Só envia SKU que (a) existe em mercos_cadastro_mestre
+# e (b) ainda NÃO TEM foto no Mercos (pedido do usuário, 28/ago/2026 -- automação
+# incremental, nunca sobrescreve foto já cadastrada lá).
+#
+# Cron diário 20h22 BRT (pedido do usuário, 28/ago/2026) + workflow_dispatch manual.
+# ⚠️ Desde 23/set/2026 o cron roda em `modo=aplicar` -- ele ENVIA foto (decisão
+# explícita do usuário). Até 22/set isso não teria efeito nenhum: o robô rodava verde
+# e enviava ZERO, por dois defeitos independentes (no ES, a guarda por
+# `mercos_cadastro_mestre` -- uma PLANILHA, sem nenhum SKU `AP`/`YE` -- derrubava os
+# 213 SKUs que tinham foto pronta; no RJ, a coluna de código/imagem fica uma posição
+# antes da do ES e a varredura abortava na página 1). Ver o histórico do fallback no
+# `run:` abaixo, automacoes/mercos-fotos/subir_fotos.py e a seção "PONTO DE ATENÇÃO"
+# do CLAUDE.md sobre robôs que escrevem no Mercos.
+#
+# O que torna o `aplicar` automático aceitável aqui, diferente dos outros robôs de
+# Mercos deste repo: o robô só envia pra SKU que a lista AO VIVO daquela empresa
+# mostra SEM foto, então ele nunca sobrescreve foto existente -- o pior caso é uma
+# foto a mais num produto que estava sem nenhuma, não um dado bom sendo substituído.
+#
+# Este workflow é SÓ ES (default e comportamento original, já validado). RJ tem
+# workflow PRÓPRIO (mercos-fotos-rj.yml), em horário diferente -- achado 18/set/2026:
+# tentar as duas empresas na MESMA execução (mesmo com sessões/browsers separados)
+# derrubou login das duas seguidas -- Mercos só aceita 1 sessão por usuário, e
+# MERCOS_EMAIL é a MESMA conta usada por este robô, por cadastro-rca-mercos, por
+# credito-limite-mercos (cron 19h30 BRT) e por qualquer pessoa logada no navegador.
+# Separar por horário é a defesa: nunca ter dois logins nossos perto um do outro.
+#
+# Existe também no mirror italo-mgl/torre_etl (rodízio de Actions) -- o schedule só
+# dispara onde a variável de repositório RODIZIO_ATIVO estiver setada;
+# workflow_dispatch continua livre em qualquer espelho.
+
+on:
+  schedule:
+    - cron: '22 23 * * *'   # 20h22 BRT (UTC-3)
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "test (só confere login/tela) | dry (varre+baixa, mostra o que subiria) | aplicar (sobe de verdade)"
+        type: choice
+        options: [test, dry, aplicar]
+        default: test
+      filiais:
+        description: "Opcional — normalmente deixe em branco (= es, default). NÃO passe es,rj junto (1 sessão só por conta Mercos -- ver mercos-fotos-rj.yml pra RJ)."
+        required: false
+      limit:
+        description: "Opcional — limita quantas fotos processar (teste em lote pequeno antes do total)"
+        required: false
+      forcar_marca:
+        description: "Opcional — CSV de marca_id (ex.: KS). Reenvia mesmo SKU que já tem foto no Mercos (fura a guarda de 'só sem foto'). Validar SEMPRE com limit=1 antes do lote inteiro."
+        required: false
+      forcar_skus:
+        description: "Opcional — CSV de SKUs exatos, mesma furada de guarda acima só pra esses SKUs."
+        required: false
+
+jobs:
+  subir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: github.event_name != 'schedule' || vars.MERCOS_ATIVO == 'true'
+    defaults:
+      run:
+        working-directory: automacoes/mercos-fotos
+    steps:
+      - uses: actions/checkout@v4
+
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Subir fotos
+        env:
+          # Achado 18/set/2026: duas rodadas (test e dry) terminaram em "0s"/"1s" sem
+          # NENHUMA linha de log, nem o 1º print() do script -- suspeita de buffer de
+          # stdout perdido se o processo morrer sem flush normal. PYTHONUNBUFFERED é a
+          # defesa no nível do interpretador (além do sys.stdout.reconfigure dentro do
+          # script); as duas juntas não custam nada e não têm por que serem redundantes
+          # em vão -- se o log continuar mudo depois disso, não é buffering.
+          PYTHONUNBUFFERED: "1"
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+          MERCOS_SENHA: ${{ secrets.MERCOS_SENHA }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_SENHA: ${{ secrets.GMAIL_SENHA }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          # ⚠️ Histórico deste fallback, porque ele já esteve errado duas vezes:
+          #   28/ago→18/set/2026  'test'  -- o cron só conferia login e NUNCA varria nada,
+          #                                  enquanto o comentário do topo afirmava 'dry'.
+          #   18/set→23/set/2026  'dry'   -- varria e reportava, mas nunca enviava foto.
+          #   23/set/2026 em diante 'aplicar' (decisão do usuário) -- o cron ENVIA.
+          # A troca só aconteceu depois de o robô voltar a funcionar: até 22/set ele
+          # rodava verde e enviava zero (guarda por mercos_cadastro_mestre no ES, coluna
+          # deslocada no RJ), então ligar o envio antes disso não teria efeito nenhum.
+          ARGS="--modo=${{ inputs.modo || 'aplicar' }}"
+          [ -n "${{ inputs.filiais }}" ] && ARGS="$ARGS --filiais=${{ inputs.filiais }}"
+          [ -n "${{ inputs.limit }}" ] && ARGS="$ARGS --limit=${{ inputs.limit }}"
+          [ -n "${{ inputs.forcar_marca }}" ] && ARGS="$ARGS --forcar-marca=${{ inputs.forcar_marca }}"
+          [ -n "${{ inputs.forcar_skus }}" ] && ARGS="$ARGS --forcar-skus=${{ inputs.forcar_skus }}"
+          python subir_fotos.py $ARGS

@@ -1,0 +1,221 @@
+# Gira — Orçamento no Mercos + link de pagamento Pix
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  🔴 NÃO É ESTE QUE ESTÁ RODANDO HOJE (21/set/2026)                        ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║  O robô em produção vive em `marianabarros-lab/gira`, que já tem os        ║
+# ║  secrets e 20 execuções (as últimas todas success). `ORCAMENTO_GH_REPO`    ║
+# ║  na Vercel aponta para LÁ — é ele que o PIX acorda.                        ║
+# ║                                                                           ║
+# ║  Este arquivo é a versão migrada, esperando os secrets. Sem eles, rodar    ║
+# ║  aqui falha logo no primeiro passo, com a causa escrita.                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# ⚠️ ISSO RECRIA, EM OUTRA FORMA, O PROBLEMA QUE A MIGRAÇÃO MATOU.
+#
+# A cópia vendorizada morreu porque ela via a si mesma mudando e não via o
+# original mudar. Agora são DUAS cópias do robô inteiro — esta e a da Mariana —
+# e a que roda é a de lá. **Conserto de seletor do Mercos feito aqui não chega
+# ao robô que está em produção**, e o sintoma será "arrumei e continua quebrado".
+#
+# Enquanto os dois existirem, conserto de seletor passa pelos DOIS lugares. O
+# fim disso é cadastrar os secrets aqui e desativar o workflow de lá — não
+# manter os dois indefinidamente.
+#
+# ✅ MIGRADO PARA A TORRE EM 21/set/2026 — E A CÓPIA VENDORIZADA MORREU AQUI.
+#
+# No repo antigo (`marianabarros-lab/gira`) este robô carregava uma cópia de
+# `mercos_login.py` e `mercos_ui.py` em `vendor/`, porque aquele repositório não
+# alcançava o da Torre. Dentro da Torre os originais estão a um diretório de
+# distância (`automacoes/cadastro-rca-mercos/`), então a cópia foi APAGADA e com
+# ela o passo `conferir-vendor.py` que existia para vigiá-la.
+#
+# Isso fecha o buraco que o próprio cabeçalho da cópia declarava: ela conseguia
+# ver a si mesma mudando, e NÃO conseguia ver o original mudando lá. Agora há um
+# corpo só — conserto de seletor do Mercos vale para os quatro robôs de uma vez.
+#
+# ⚠️ Conferido antes de apagar: as duas cópias eram IDÊNTICAS aos originais fora
+# o cabeçalho (o diff de 422 linhas era CRLF × LF, não divergência de código).
+#
+# 🔴 O QUE ESTE ROBÔ NUNCA FAZ: clicar em "Gerar pedido". O artefato final é um
+# ORÇAMENTO com link de pagamento. Gerar o pedido é decisão humana, tomada
+# DEPOIS que o cliente paga. Há uma guarda no código (`_guarda_gerar_pedido`)
+# que aborta a rodada se o botão proibido estiver em foco.
+#
+# ⚠️ SEM `schedule`, DE PROPÓSITO. O Mercos aceita UMA sessão por usuário e já
+# há três robôs disputando ela. Este é o único que roda em horário comercial
+# (orçamento é reativo — o cliente acabou de confirmar), então ele entra só
+# quando alguém/algo pede. Um cron aqui derrubaria a sessão de quem estivesse
+# usando o Mercos no meio do expediente.
+#
+# ⚠️ A ESPERA DE SESSÃO É CURTA (45 s, não os 900 s do robô de crédito). A
+# promessa na tela do cliente é "link em até 5 minutos" — esperar 15 min
+# quebraria a promessa. O risco de reentrar rápido (roubar a sessão de quem
+# acabou de logar) é REAL e é uma escolha, não um descuido.
+
+name: Gira — Orçamento Mercos
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "O que fazer nesta rodada"
+        required: true
+        default: "dry"
+        type: choice
+        options:
+          - mapear    # abre as 2 primeiras telas e confere seletores. NUNCA escreve.
+          - dry       # percorre tudo e diz o que faria. NUNCA escreve.
+          - aplicar   # CRIA o orçamento e o link de pagamento de verdade
+      fila:
+        description: "Processar a fila do botão PIX (ignora cnpj/itens/desconto)"
+        required: false
+        default: false
+        type: boolean
+      limite:
+        description: "Quantos pedidos da fila nesta rodada"
+        required: false
+        default: "5"
+      cnpj:
+        description: "CNPJ do cliente (só dígitos) — ou o nome exato"
+        required: false
+        default: ""
+      itens:
+        description: "SKU:QTD separados por vírgula — ex.: BB02009:12,BB02001:6"
+        required: false
+        default: ""
+      desconto:
+        description: "Desconto do PEDIDO INTEIRO, em % — ex.: 29"
+        required: false
+        default: "0"
+      disparado_por:
+        description: "Quem originou (e-mail) — só auditoria"
+        required: false
+        default: ""
+
+# Duas rodadas ao mesmo tempo disputariam a única sessão que o Mercos permite.
+concurrency:
+  group: gira-orcamento-mercos
+  cancel-in-progress: false
+
+jobs:
+  orcar:
+    runs-on: ubuntu-latest
+    # ⚠️ MAIOR que a espera de sessão (45 s × 2 voltas) + o tempo de navegação.
+    # Sem folga, o Actions mata o robô DORMINDO — sem log, sem auditoria, sem
+    # e-mail: a queda fica muda, que é pior que abortar.
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: automacoes/orcamento-mercos
+    steps:
+      - uses: actions/checkout@v4
+
+
+      # Sem os secrets, o robo morreria dentro do login do Mercos com uma
+      # mensagem que manda procurar bug de credencial. Falhar aqui, nomeando a
+      # causa, custa 5 segundos e economiza a investigacao errada.
+      - name: Conferir se este repo e mesmo o que roda o robo
+        env:
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+        run: |
+          if [ -z "$MERCOS_EMAIL" ]; then
+            echo "::error::Este repositorio NAO tem os secrets do robo do Gira."
+            echo "::error::O robo em producao esta em marianabarros-lab/gira (ORCAMENTO_GH_REPO aponta para la)."
+            echo "::error::Para rodar aqui: cadastrar MERCOS_EMAIL/MERCOS_SENHA/GMAIL_USER/GMAIL_SENHA/"
+            echo "::error::SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY/EVOLUTION_* e trocar ORCAMENTO_GH_REPO na Vercel."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Declarar a rodada (fica no log, antes de qualquer ação)
+        run: |
+          echo "modo ............ ${{ inputs.modo }}"
+          echo "disparado por ... ${{ inputs.disparado_por || github.actor }}"
+          echo "cnpj ............ ${{ inputs.cnpj }}"
+          echo "itens ........... ${{ inputs.itens }}"
+          echo "desconto ........ ${{ inputs.desconto }}%"
+          echo "commit .......... ${{ github.sha }}"
+          echo "log desta run ... ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Orcamentista
+        env:
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+          MERCOS_SENHA: ${{ secrets.MERCOS_SENHA }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_SENHA: ${{ secrets.GMAIL_SENHA }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Empresa ES. Vazio cai no default do código (424525).
+          MERCOS_EMPRESA_ID: ${{ vars.MERCOS_EMPRESA_ID }}
+          # Os módulos compartilhados do Mercos — o ORIGINAL, não uma cópia.
+          # ⚠️ O robô já acha este caminho sozinho (é o vizinho de pasta); a env
+          # existe como âncora explícita para o dia em que alguém mover a pasta,
+          # e para que o log diga de onde veio o módulo em vez de adivinhar.
+          MERCOS_MODULOS_DIR: ${{ github.workspace }}/automacoes/cadastro-rca-mercos
+          # Instancia da Evolution que manda o link de volta ao cliente.
+          # A Evolution manda a IMAGEM do QR direto (o worker do servidor ainda
+          # nao le media_url). Sem estas, a mensagem sai so com o link.
+          EVOLUTION_URL: ${{ secrets.EVOLUTION_URL }}
+          EVOLUTION_APIKEY: ${{ secrets.EVOLUTION_APIKEY }}
+          EVOLUTION_INSTANCIA: ${{ secrets.EVOLUTION_INSTANCIA }}
+          SUPABASE_BUCKET_ARQUIVOS: ${{ secrets.SUPABASE_BUCKET_ARQUIVOS }}
+          DISPARADO_POR: ${{ inputs.disparado_por || github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "${{ inputs.modo }}" in
+            mapear)  ARGS="--mapear" ;;
+            aplicar) ARGS="--aplicar" ;;
+            *)       ARGS="--dry" ;;
+          esac
+          if [ "${{ inputs.fila }}" = "true" ]; then
+            # A fila traz cliente, itens e desconto de cada pedido -- os campos
+            # da tela nao valem aqui, e passa-los junto seria dizer duas coisas.
+            ARGS="$ARGS --fila --limite '${{ inputs.limite }}'"
+          elif [ "${{ inputs.modo }}" != "mapear" ]; then
+            ARGS="$ARGS --cnpj '${{ inputs.cnpj }}' --itens '${{ inputs.itens }}' --desconto '${{ inputs.desconto }}'"
+          fi
+          mkdir -p logs
+          echo "rodando: python orcamentista.py $ARGS"
+          # `tee` + PYTHONUNBUFFERED: o log completo vira arquivo E aparece na
+          # tela. `pipefail` porque sem ele o exit code do tee mascara a falha
+          # do robô e a rodada termina verde com o robô morto.
+          set -o pipefail
+          eval "PYTHONUNBUFFERED=1 python orcamentista.py $ARGS" 2>&1 \
+            | tee "logs/execucao-${{ github.run_id }}-${{ github.run_attempt }}.log"
+
+      - name: Resumo na tela do Actions
+        if: always()
+        run: |
+          LOG=$(ls -t logs/execucao-*.log 2>/dev/null | head -1)
+          {
+            echo "## Gira — Orçamento Mercos · \`${{ inputs.modo }}\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Disparado por | \`${{ inputs.disparado_por || github.actor }}\` |"
+            echo "| Fila | ${{ inputs.fila }} |"
+            echo "| Cliente | \`${{ inputs.cnpj }}\` |"
+            echo "| Itens | \`${{ inputs.itens }}\` |"
+            echo "| Desconto | ${{ inputs.desconto }}% |"
+            echo "| Resultado | ${{ job.status }} |"
+            echo ""
+            if [ -n "$LOG" ]; then
+              echo '```json'
+              grep '^AUDIT ' "$LOG" | head -40 || echo "(nenhum evento)"
+              echo '```'
+            else
+              echo "⚠️ Nenhum log foi produzido — o robô morreu antes de escrever."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Sempre, inclusive em falha: o artifact guarda o QR Code e os screenshots
+      # de cada passo. A tela do Actions expira; o artifact não.

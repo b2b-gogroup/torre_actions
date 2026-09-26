@@ -1,0 +1,117 @@
+name: CadastroRCA-Mercos — pipeline completo
+
+# Roda o pipeline de pos-cadastro: le planilha + Metabase, decide, aplica no
+# Mercos (tabela de preco + condicao pagamento + carteira), escreve status
+# de volta na planilha, notifica o vendedor por WhatsApp.
+# So workflow_dispatch por enquanto (sem cron/webhook -- decisao do usuario
+# 23/jul). Ver CadastroRCA-Mercos/arquitetura-producao.md no repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limite:
+        description: "Quantos clientes processar nesta rodada (ignorado se 'cnpjs' for preenchido)"
+        required: false
+        default: "30"
+      cnpjs:
+        description: "CNPJs especificos separados por virgula (selecao manual na Torre) -- se preenchido, ignora 'limite' e processa so estes"
+        required: false
+        default: ""
+
+jobs:
+  rodar:
+    runs-on: ubuntu-latest
+    # ⚠️ TEM QUE SER MAIOR QUE A ESPERA DE SESSAO DO ESCRITOR (CADASTRO_JANELA_MIN
+    # = 55, que por sua vez cobre 2 voltas de 15 min). E essa folga que faz o robo
+    # DESISTIR da volta que nao cabe, com log e mensagem, em vez de ser morto pelo
+    # Actions dormindo -- queda muda e pior que aborto declarado.
+    #
+    # ⚠️ 120 e nao 60 desde 01/set/2026: sao DOIS escritores em sequencia (ES e
+    # RJ), cada um com a propria janela de 55 min -- o invariante e "soma das
+    # janelas < timeout do job", nao "uma janela < timeout".
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: automacoes/cadastro-rca-mercos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cadastro de usuarios do Mercos (vem de secret, nunca do repo)
+        # Repo publico: usuarios_mercos.csv tem 75 nomes e e-mails corporativos, que
+        # viram lista de phishing direcionado. Escrito aqui a partir do secret, usado
+        # pelo run, morto com o runner. Passa por env e nao interpolado no shell, para
+        # o conteudo nunca ser reinterpretado como comando.
+        env:
+          CSV: ${{ secrets.USUARIOS_MERCOS_CSV }}
+        run: printf '%s' "$CSV" > automacoes/cadastro-rca-mercos/usuarios_mercos.csv
+
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Decisor (le planilha + Metabase, decide, grava ledger)
+        env:
+          METABASE_URL: ${{ secrets.METABASE_URL }}
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CADASTRO_RCA_SHEETS_SERVICE_ACCOUNT_JSON: ${{ secrets.CADASTRO_RCA_SHEETS_SERVICE_ACCOUNT_JSON }}
+        run: python decisor.py
+
+      - name: Escritor ES (aplica no Mercos + escreve planilha + notifica)
+        env:
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+          MERCOS_SENHA: ${{ secrets.MERCOS_SENHA }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_SENHA: ${{ secrets.GMAIL_SENHA }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CADASTRO_RCA_SHEETS_SERVICE_ACCOUNT_JSON: ${{ secrets.CADASTRO_RCA_SHEETS_SERVICE_ACCOUNT_JSON }}
+          # Janela real do job (timeout-minutes acima), menos folga. O escritor usa
+          # isso pra decidir se ainda cabe esperar 15 min e voltar quando o Mercos
+          # derruba a sessao.
+          CADASTRO_JANELA_MIN: "55"
+        run: |
+          if [ -n "${{ inputs.cnpjs }}" ]; then
+            python escritor.py --filial es --cnpjs "${{ inputs.cnpjs }}"
+          elif [ -n "${{ inputs.limite }}" ]; then
+            python escritor.py --filial es --limite "${{ inputs.limite }}"
+          else
+            python escritor.py --filial es
+          fi
+
+      # ⚠️ RJ e um step SEPARADO, e nao uma flag "as duas", porque o passo da
+      # carteira le "Todos os usuarios" da empresa em que a SESSAO esta logada:
+      # so da pra atender uma filial por login. Rodar as duas no mesmo processo
+      # poria a carteira na empresa errada SEM ERRO NENHUM.
+      #
+      # ⚠️ Cliente cujo representante NAO tem cadastro Mercos no RJ e PULADO pelo
+      # escritor (RepresentanteForaDaFilial) -- sem "Erro mercos" na planilha e
+      # sem mexer no ledger. Pedido do usuario ao ligar o RJ: "rodar no RJ
+      # somente se o vendedor tiver cadastro no RJ". O decisor ja nem cria a
+      # linha nesse caso; esta e a segunda camada, que cobre `--cnpjs` manual
+      # (que ignora status) e CSV que mudou depois da decisao.
+      - name: Escritor RJ (mesma coisa, na empresa 424524)
+        env:
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+          MERCOS_SENHA: ${{ secrets.MERCOS_SENHA }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_SENHA: ${{ secrets.GMAIL_SENHA }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CADASTRO_RCA_SHEETS_SERVICE_ACCOUNT_JSON: ${{ secrets.CADASTRO_RCA_SHEETS_SERVICE_ACCOUNT_JSON }}
+          CADASTRO_JANELA_MIN: "55"
+        run: |
+          if [ -n "${{ inputs.cnpjs }}" ]; then
+            python escritor.py --filial rj --cnpjs "${{ inputs.cnpjs }}"
+          elif [ -n "${{ inputs.limite }}" ]; then
+            python escritor.py --filial rj --limite "${{ inputs.limite }}"
+          else
+            python escritor.py --filial rj
+          fi

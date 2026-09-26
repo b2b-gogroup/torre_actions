@@ -1,0 +1,50 @@
+name: Mercos — diagnóstico do 2FA (só leitura de e-mail)
+
+# Lista os últimos e-mails do Mercos na caixa configurada. NÃO abre navegador,
+# NÃO loga no Mercos, NÃO pede código nenhum.
+#
+# ⚠️ Essa última parte é o ponto: quando a suspeita é bloqueio por tentativa
+# repetida, rodar `mercos-fotos --modo=test` pra "só testar" pede MAIS um
+# código e piora o que se está investigando. Este workflow existe pra separar
+# as causas sem tocar no Mercos.
+#
+# Nasceu em 21/set/2026, com os três robôs de Mercos parados há 3 dias em
+# "Nenhum codigo 2FA encontrado": a primeira hipótese (GMAIL_USER apontando pra
+# caixa errada, secret trocado em 18/set 23:10) foi DERRUBADA pela medição --
+# a caixa tinha 127 e-mails do Mercos. O que faltava era ver o que são esses
+# e-mails e quando o último CÓDIGO chegou.
+#
+# Só workflow_dispatch, sem cron, em qualquer espelho do rodízio (é leitura).
+
+on:
+  workflow_dispatch:
+    inputs:
+      quantos:
+        description: "Quantos e-mails listar (default 20)"
+        required: false
+        default: "20"
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: automacoes/cadastro-rca-mercos
+    steps:
+      - uses: actions/checkout@v4
+
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Diagnóstico
+        env:
+          PYTHONUNBUFFERED: "1"
+          # MERCOS_EMAIL entra só pra comparar com GMAIL_USER (o Mercos manda o
+          # código pra conta que loga). MERCOS_SENHA NÃO entra: nada aqui loga.
+          MERCOS_EMAIL: ${{ secrets.MERCOS_EMAIL }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_SENHA: ${{ secrets.GMAIL_SENHA }}
+        run: python ferramentas/diagnostico_2fa.py --quantos=${{ inputs.quantos || '20' }}
