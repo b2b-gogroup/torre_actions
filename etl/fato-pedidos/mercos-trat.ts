@@ -139,14 +139,34 @@ function chave(regiao: string | null, numero: number | string | null): string | 
 
 export async function montarTratMercos(
   tratDoCard: Record<string, unknown>[],
-  // ⚠️ Mesma janela do módulo irmão e do diff-delete — ver a nota longa lá. Janela maior
-  // aqui não causa órfão (esta fonte só ENRIQUECE linha que o `protheusFat` já trouxe),
-  // mas manter as duas iguais evita que alguém mexa numa e esqueça a outra.
   diasJanela = 60,
 ): Promise<ResultadoTratMercos> {
+  // 🔴 A JANELA SEGUE O ESCOPO DO ETL, NÃO É FIXA — e isto custou uma regressão medida.
+  //
+  // A 1ª versão usava 60 d sempre, copiando o módulo irmão. No **intraday** o escopo do
+  // Protheus também é 60 d, então cobria tudo e o resultado foi ótimo (`forma_pagamento`
+  // de 59% → 96%). No **full** o escopo é o ANO INTEIRO e o `DELETE` reescreve tudo desde
+  // 01/jan: as ~10 meses fora dos 60 d ficavam sem `protheusTrat` e **perdiam o
+  // `forma_pagamento` que o card preenchia**. Medido no 1º full: **98% → 31%**, com
+  // **39.518 linhas** de faturado antigo zeradas.
+  //
+  // ⚠️ *Suplemento que repõe fonte tem de cobrir o MESMO recorte que o `DELETE` apaga.*
+  // Cobrir menos não deixa buraco onde não havia dado — apaga dado que havia.
+  //
+  // ⚠️ O dado existe: `mercos_vendas_detalhadas` vai de **24/01/2026** até hoje (12.342
+  // linhas), então o ano inteiro está lá. Era só eu não ter recortado.
+  //
+  // ⚠️ **NÃO fazer o mesmo no `mercos-pipeline.ts`**, e a diferença é de natureza: aquele
+  // CRIA linha de pedido, então janela maior que a do `DELETE` deixa órfão vivo para
+  // sempre (a nota longa lá explica). Este só ENRIQUECE linha que o `protheusFat` já
+  // trouxe — não cria nada, e por isso alargar é seguro.
   const jp = janelaProtheus();
-  const diasEfetivo = jp.ativa ? Math.min(diasJanela, jp.dias) : diasJanela;
-  const corte = new Date(Date.now() - diasEfetivo * 86_400_000).toISOString().slice(0, 10);
+  const corte = jp.ativa
+    ? new Date(Date.now() - Math.min(diasJanela, jp.dias) * 86_400_000).toISOString().slice(0, 10)
+    // full: `corteInt` é o YYYYMMDD do início do escopo (20260101) — a MESMA constante que
+    // o `load.ts` usa no DELETE, para as duas contas não poderem divergir.
+    : `${String(jp.corteInt).slice(0, 4)}-${String(jp.corteInt).slice(4, 6)}-${String(jp.corteInt).slice(6, 8)}`;
+  const diasEfetivo = jp.ativa ? Math.min(diasJanela, jp.dias) : 0;
 
   const mercos = (await fetchSupabaseTable(
     "mercos_vendas_detalhadas",
@@ -205,7 +225,7 @@ export async function montarTratMercos(
 
   logger.info(
     `Trat Mercos (suplemento do card 19611): ${diag.gerados} linha(s) geradas ` +
-      `(janela ${diasEfetivo}d desde ${corte}; ${diag.ja_no_card} já no card, ` +
+      `(escopo ${diasEfetivo ? `${diasEfetivo}d` : "FULL"} desde ${corte}; ${diag.ja_no_card} já no card, ` +
       `${diag.com_vendedor} com vendedor, ${diag.com_forma_pagamento} com forma de pagamento)`,
   );
 
