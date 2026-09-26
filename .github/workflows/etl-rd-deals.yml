@@ -1,0 +1,50 @@
+name: ETL rd_deals
+
+on:
+  schedule:
+    - cron: '0 3,15 * * *'   # 00:00 e 12:00 BRT (UTC-3)
+  workflow_dispatch:
+
+concurrency:
+  group: etl-rd-deals
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    # Rodizio de contas: este workflow existe em mais de um espelho (o push vai pra todos) e o
+    # `schedule` dispara em TODOS. Sem a guarda, ele roda em conta que nao e a ativa -- em
+    # 31/ago/2026 o ETL falhava 4x/dia em b2b-gogroup (job morto em 4s, 0 steps: billing
+    # bloqueado) enquanto rodava certo em italo-mgl. Falha diaria esperada e o que faz ninguem
+    # olhar quando a falha vira real.
+    #
+    # Virar o rodizio nao mexe em codigo: `gh variable set RODIZIO_ATIVO -b true -R <novo>` e
+    # `gh variable delete RODIZIO_ATIVO -R <antigo>`.
+    #
+    # ⚠️ Falha FECHANDO: espelho sem a variavel nao roda no schedule. O preco e que esquecer de
+    # setar a variavel PARA a carga -- o detector disso e `v_carga_atrasada` no banco.
+    # `workflow_dispatch` continua livre em qualquer espelho: rodada manual e decisao de uma pessoa.
+    if: github.event_name != 'schedule' || vars.ETL_APOIO_ATIVO == 'true'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: etl/package-lock.json
+
+      - name: Install ETL dependencies
+        working-directory: etl
+        run: npm ci
+
+      - name: Run ETL rd_deals
+        working-directory: etl
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RD_CRM_TOKEN: ${{ secrets.RD_CRM_TOKEN }}
+        run: npx tsx rd-deals/index.ts

@@ -55,7 +55,7 @@ jobs:
       - name: 4. so os caminhos da allowlist
         if: always()
         run: |
-          PERM='^(\.github/|README\.md$|\.gitignore$|etl/fato-pedidos/|etl/shared/|etl/(package\.json|package-lock\.json|tsconfig\.json)$|automacoes/)'
+          PERM='^(\.github/|README\.md$|\.gitignore$|etl/fato-pedidos/|etl/shared/|etl/rd-deals/|etl/conta-receber-tiny/|etl/transportes-base/|etl/transportes-apice/|etl/(package\.json|package-lock\.json|tsconfig\.json)$|automacoes/)'
           fora=$(git ls-files | grep -vE "$PERM" || true)
           if [ -n "$fora" ]; then
             echo "::error::arquivo fora da allowlist. Este repo e PUBLICO: so entra o ETL de fato_pedidos, que foi auditado (zero credencial, zero nome de cliente, CNPJ so da propria empresa)."

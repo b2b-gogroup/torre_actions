@@ -1,0 +1,61 @@
+name: ETL transportes-apice
+
+# Replica a aba "Base" do Excel (Drive) para a tabela transportes_apice no
+# Supabase. Alimenta o rastreio pós-faturamento dos pedidos APICE/Tiny na
+# jornada do pedido (transportadora, expedição, previsão e data de entrega).
+#
+# Frequência: 10h e 19h BRT (13h e 22h UTC).
+
+on:
+  schedule:
+    - cron: '0 13,22 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: etl-transportes-apice
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    # Rodizio de contas: este workflow existe em mais de um espelho (o push vai pra todos) e o
+    # `schedule` dispara em TODOS. Sem a guarda, ele roda em conta que nao e a ativa -- em
+    # 31/ago/2026 o ETL falhava 4x/dia em b2b-gogroup (job morto em 4s, 0 steps: billing
+    # bloqueado) enquanto rodava certo em italo-mgl. Falha diaria esperada e o que faz ninguem
+    # olhar quando a falha vira real.
+    #
+    # Virar o rodizio nao mexe em codigo: `gh variable set RODIZIO_ATIVO -b true -R <novo>` e
+    # `gh variable delete RODIZIO_ATIVO -R <antigo>`.
+    #
+    # ⚠️ Falha FECHANDO: espelho sem a variavel nao roda no schedule. O preco e que esquecer de
+    # setar a variavel PARA a carga -- o detector disso e `v_carga_atrasada` no banco.
+    # `workflow_dispatch` continua livre em qualquer espelho: rodada manual e decisao de uma pessoa.
+    if: github.event_name != 'schedule' || vars.ETL_APOIO_ATIVO == 'true'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: etl/package-lock.json
+
+      - name: Install ETL dependencies
+        working-directory: etl
+        run: npm ci
+
+      - name: Run ETL transportes-apice
+        working-directory: etl
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Lê o xlsx pela service account em vez de depender de "qualquer um
+          # com o link" -- que caiu em 15/set e congelou a tabela por 11 dias
+          # (o Drive devolve 200 com a página de login, nunca 401). Mesma chave
+          # já usada por etl/produto-fotos-drive; sem ela o download cai no
+          # link público, como antes.
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+        run: npx tsx transportes-apice/index.ts

@@ -1,0 +1,76 @@
+name: ETL — Contas a receber Tiny (Ápice)
+
+# Prova de que a cobrança EXISTE do lado Ápice — o equivalente ao título do Protheus, que o
+# trilho Tiny nunca teve. Ver db/migrations/20260812g e 20260812h.
+#
+# 2×/dia. Não precisa de mais: conta a receber nasce junto com a NF e muda pouco. A janela
+# padrão é mês atual + anterior, o que cobre o fechamento (a maior parte do faturamento Ápice
+# sai no último dia do mês e a conta aparece junto).
+
+on:
+  schedule:
+    - cron: "20 10 * * *"   # 07h20 BRT
+    - cron: "20 21 * * *"   # 18h20 BRT
+  workflow_dispatch:
+    inputs:
+      de:
+        description: "Mês inicial (YYYY-MM) — vazio = mês anterior"
+        required: false
+      ate:
+        description: "Mês final (YYYY-MM) — vazio = mês atual"
+        required: false
+      dry:
+        description: "Só medir, não gravar"
+        type: boolean
+        default: false
+
+concurrency:
+  # ⚠️ Duas execuções simultâneas quebrariam a dedução de baixa: a varredura de uma marcaria
+  # `ainda_aberta=false` nas linhas que a outra ainda não gravou.
+  group: etl-conta-receber-tiny
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    # Rodizio de contas: este workflow existe em mais de um espelho (o push vai pra todos) e o
+    # `schedule` dispara em TODOS. Sem a guarda, ele roda em conta que nao e a ativa -- em
+    # 31/ago/2026 o ETL falhava 4x/dia em b2b-gogroup (job morto em 4s, 0 steps: billing
+    # bloqueado) enquanto rodava certo em italo-mgl. Falha diaria esperada e o que faz ninguem
+    # olhar quando a falha vira real.
+    #
+    # Virar o rodizio nao mexe em codigo: `gh variable set RODIZIO_ATIVO -b true -R <novo>` e
+    # `gh variable delete RODIZIO_ATIVO -R <antigo>`.
+    #
+    # ⚠️ Falha FECHANDO: espelho sem a variavel nao roda no schedule. O preco e que esquecer de
+    # setar a variavel PARA a carga -- o detector disso e `v_carga_atrasada` no banco.
+    # `workflow_dispatch` continua livre em qualquer espelho: rodada manual e decisao de uma pessoa.
+    if: github.event_name != 'schedule' || vars.ETL_APOIO_ATIVO == 'true'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet supabase
+
+      - name: Rodar ETL
+        # ⚠️ Os 4 secrets JÁ EXISTEM nos repos do rodízio — nenhum precisa ser cadastrado.
+        # `SUPABASE_URL` e não `NEXT_PUBLIC_SUPABASE_URL`: é o nome que existe aqui. O prefixo
+        # NEXT_PUBLIC_ é convenção de browser e não tem função num ETL Python; duplicar o secret
+        # só para casar com o nome local criaria dois valores que podem divergir — e no dia em
+        # que divergissem, o ETL escreveria em outro banco sem avisar.
+        env:
+          TINY_TOKEN_ES: ${{ secrets.TINY_TOKEN_ES }}
+          TINY_TOKEN_RJ: ${{ secrets.TINY_TOKEN_RJ }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS=""
+          [ -n "${{ inputs.de }}"  ] && ARGS="$ARGS --de ${{ inputs.de }}"
+          [ -n "${{ inputs.ate }}" ] && ARGS="$ARGS --ate ${{ inputs.ate }}"
+          [ "${{ inputs.dry }}" = "true" ] && ARGS="$ARGS --dry"
+          python etl/conta-receber-tiny/index.py $ARGS
