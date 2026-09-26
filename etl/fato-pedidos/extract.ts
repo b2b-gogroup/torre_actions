@@ -269,6 +269,10 @@ export async function extractAll(): Promise<ExtractedData> {
   // ⚠️ Desliga sozinho. Quando o middleware voltar, o card volta a trazer os pedidos
   // (com item de verdade), o módulo gera 0 linha e o SKU sentinela some no primeiro run
   // full. `ETL_MERCOS_PIPELINE=false` desliga à mão se precisar.
+  // Fontes do db 48 que o Mercos conseguiu repor NESTE run. Alimenta a checagem de
+  // fontes críticas logo abaixo — ver a nota longa lá.
+  const supridoPorMercos = new Set<SourceName>();
+
   if (process.env.ETL_MERCOS_PIPELINE !== "false") {
     try {
       const { montarPipelineMercos } = await import("./mercos-pipeline.js");
@@ -278,12 +282,44 @@ export async function extractAll(): Promise<ExtractedData> {
       );
       if (supl.linhas.length > 0) {
         data.protheusPedidos = [...(data.protheusPedidos ?? []), ...supl.linhas];
+        supridoPorMercos.add("protheusPedidos");
       }
     } catch (e) {
       // NÃO é crítica: falhar aqui devolve o comportamento anterior (pipeline vazio),
       // que é ruim mas é o estado conhecido. Abortar o ETL inteiro por causa do
       // suplemento seria trocar "pipeline incompleto" por "carga não roda".
       logger.warn(`Pipeline Mercos suplementar falhou (não-crítico): ${e}`);
+    }
+  }
+
+  // ── Tratativa do Mercos: repõe o ENRIQUECIMENTO que o card 19611 trazia ───
+  //
+  // Irmão do bloco acima. O 19611 (`protheusTrat`) é o único que traz `nome_vendedor`,
+  // `forma_pagamento`, `parcelas` e `data_pedido` — medido: o `protheusFat` entrega esses
+  // quatro a **ZERO**. Sem eles a carga não pode rodar (venda sem vendedor, bonificação
+  // contada como venda), e é por isso que ele é `critical`.
+  //
+  // ⚠️ Roda DEPOIS do corte de janela, pela mesma razão do irmão: o módulo só gera a chave
+  // que o card não trouxe, e o card já está recortado aqui.
+  //
+  // ⚠️ Desliga sozinho quando o middleware voltar (`ja_no_card` passa a cobrir tudo e ele
+  // gera 0 linha). `ETL_MERCOS_TRAT=false` desliga à mão.
+  if (process.env.ETL_MERCOS_TRAT !== "false") {
+    try {
+      const { montarTratMercos } = await import("./mercos-trat.js");
+      const supl = await montarTratMercos(
+        data.protheusTrat as Record<string, unknown>[],
+        Number(process.env.ETL_MERCOS_TRAT_DIAS ?? process.env.ETL_MERCOS_PIPELINE_DIAS ?? 60),
+      );
+      if (supl.linhas.length > 0) {
+        data.protheusTrat = [...(data.protheusTrat ?? []), ...supl.linhas];
+        supridoPorMercos.add("protheusTrat");
+      }
+    } catch (e) {
+      // Mesma regra do irmão: falhar aqui devolve o estado anterior (card vazio e ETL
+      // abortando na checagem abaixo), que é ruim mas é o estado SEGURO. Abortar por
+      // causa do suplemento seria trocar "carga não roda" por "carga não roda".
+      logger.warn(`Trat Mercos suplementar falhou (não-crítico): ${e}`);
     }
   }
 
@@ -301,8 +337,26 @@ export async function extractAll(): Promise<ExtractedData> {
       "protheusTrat", "protheusFat", "protheusPedidos",
       "tinyAPSP", "tinyBBSP", "tinyAPSPPedidos",
     ];
-    const criticalFailed = errors.some((e) => critical.some((c) => e.startsWith(c)));
-    if (criticalFailed) throw new Error(`Fontes críticas falharam: ${errors.join("; ")}`);
+    // ⚠️ `protheusTrat`/`protheusPedidos` deixam de ser fatais **só quando o Mercos repôs
+    // as linhas deles neste run** (blocos acima). É a diferença entre "tenho a informação
+    // por outra fonte" e "não tenho a informação": nos dois casos o card falhou, mas só no
+    // primeiro o transform recebe `nome_vendedor`/`forma_pagamento`. Sem essa distinção
+    // seria afrouxar o `critical`, que é justamente o que apagou ~R$4M em 23/jul/2026.
+    // As outras sete continuam fatais em qualquer cenário — nenhuma tem fonte alternativa.
+    const fatais = errors.filter((e) =>
+      critical.some((c) => e.startsWith(c) && !supridoPorMercos.has(c as SourceName))
+    );
+    if (fatais.length > 0) throw new Error(`Fontes críticas falharam: ${fatais.join("; ")}`);
+
+    // Falha crítica coberta pelo Mercos nunca passa calada: é degradação declarada, e o
+    // dia em que o middleware voltar essa linha some sozinha do log.
+    const repostas = [...supridoPorMercos].filter((c) => errors.some((e) => e.startsWith(c)));
+    if (repostas.length > 0) {
+      logger.warn(
+        `Fonte crítica falhou e foi REPOSTA pelo Mercos: ${repostas.join(", ")} — ` +
+          `a carga segue, mas com o db 48 fora. Ver etl/fato-pedidos/mercos-trat.ts.`
+      );
+    }
   }
 
   // ── Tiny API: ES e RJ em sequência (evitar rate limit erro 6) ─────────────
