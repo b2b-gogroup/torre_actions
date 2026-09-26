@@ -64,8 +64,23 @@ import { logger } from "../shared/logger.js";
 import { fetchSupabaseTable } from "../shared/supabase-admin.js";
 import { janelaProtheus } from "./janela-protheus.js";
 
-/** Região do Mercos → filial da Torre. Igual ao módulo irmão: SP não usa Mercos. */
-const REGIAO_FILIAL: Record<string, string> = { ES: "CD ES", RJ: "CD RJ" };
+/**
+ * Região do Mercos → filial da Torre.
+ *
+ * ⚠️ **SP ENTRA AQUI e NÃO entra no `mercos-pipeline.ts` — a diferença é de natureza, não
+ * descuido.** Lá o assunto é **pedido em aberto**, e SP não coloca pedido no Mercos (1 em
+ * toda a base), então incluí-lo geraria pipeline que não existe. Aqui o assunto é
+ * **enriquecer nota já faturada**, e SP tem histórico no Mercos: 1.458 linhas.
+ *
+ * Copiar a constante do irmão sem medir custou uma regressão: com SP de fora sobravam
+ * **7.500 linhas** de faturado Protheus sem `forma_pagamento` (R$ 8,15 mi), e medido,
+ * **7.457 delas (99,4%) têm par no Mercos** — era só não ter excluído.
+ *
+ * ⚠️ O histórico de SP no Mercos vai de **24/01 a 01/06/2026** e para aí. As ~44 linhas
+ * faturadas depois disso ficam sem forma de pagamento por **ausência na origem**, não por
+ * recorte nosso — e é isso que a contagem `sem_regiao` do diagnóstico declara.
+ */
+const REGIAO_FILIAL: Record<string, string> = { ES: "CD ES", RJ: "CD RJ", SP: "CD SP" };
 
 interface LinhaMercos {
   numero_pedido: number | string | null;
