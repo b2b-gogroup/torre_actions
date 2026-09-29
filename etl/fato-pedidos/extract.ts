@@ -178,10 +178,24 @@ export async function extractAll(): Promise<ExtractedData> {
     { name: "protheusTrat", fn: () => fetchMetabaseCard(CARDS.protheusTrat) },
     { name: "protheusFat",  fn: () => fetchMetabaseCard(CARDS.protheusFat, paramsFat) },
     { name: "protheusPedidos", fn: () => fetchMetabaseCard(CARDS.protheusPedidos) },
-    // Descontinuados: mantém via Metabase
-    { name: "tinyAPSP",        fn: () => fetchMetabaseCard(CARDS.tinyAPSP) },
-    { name: "tinyBBSP",        fn: () => fetchMetabaseCard(CARDS.tinyBBSP) },
-    { name: "tinyAPSPPedidos", fn: () => fetchMetabaseCard(CARDS.tinyAPSPPedidos) },
+    // 🧊 tinyAPSP / tinyBBSP / tinyAPSPPedidos CONGELADOS desde 29/set/2026.
+    // O Data Mart (db 43) arquivou as tabelas das contas Tiny atacado SP — `raw.*` virou
+    // `archive.raw__*`, schema em que o Metabase NÃO tem permissão — e os 3 cards passaram
+    // a devolver `relation "raw.tiny_pedidos_apice_atacado_sp" does not exist`. Como eram
+    // `critical`, o ETL inteiro abortava (intraday de 29/set 20h14).
+    //
+    // ⚠️ Reescrever o SQL NÃO serve: (a) Barbours SP não tem mais tabela nenhuma; (b) no
+    // Ápice SP o `pedido_id` vem do JOIN com `pedidos_apice_atacado_sp` (arquivada) — sem ele
+    // a chave vira `tiny_sp:NF-x` e o UPSERT cria linha nova em vez de atualizar (a
+    // duplicação de 01/ago/2026). (c) `raw.tiny_nfe_ap_cosmetics_sp` NÃO é substituta: é
+    // outra conta Tiny (241 mil NFs, varejo). Conferido que nada se perde: depois de 09/jul a
+    // conta Ápice atacado SP só emitiu intercompany/devolução/descarte.
+    //
+    // O `tiny_sp` já carregado fica intacto porque o load.ts o exclui dos DELETEs (mesmo
+    // tratamento da família `_fix`). Os IDs ficam em CARDS só como registro.
+    { name: "tinyAPSP",        fn: async () => [] },
+    { name: "tinyBBSP",        fn: async () => [] },
+    { name: "tinyAPSPPedidos", fn: async () => [] },
     // Carteira RCA: lida direto do banco (cnpj_cliente + vendedor_id UUID)
     {
       name: "carteiraRCAs",
@@ -335,7 +349,7 @@ export async function extractAll(): Promise<ExtractedData> {
     const critical = [
       "dimVendedor", "dimCliente", "dimProduto",
       "protheusTrat", "protheusFat", "protheusPedidos",
-      "tinyAPSP", "tinyBBSP", "tinyAPSPPedidos",
+      // tinyAPSP/tinyBBSP/tinyAPSPPedidos saíram em 29/set/2026: congelados (ver jobs acima).
     ];
     // ⚠️ `protheusTrat`/`protheusPedidos` deixam de ser fatais **só quando o Mercos repôs
     // as linhas deles neste run** (blocos acima). É a diferença entre "tenho a informação

@@ -196,13 +196,13 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
         const r = janela.ativa
           ? await guardClient.query(
               `SELECT COUNT(*) AS n FROM fato_pedidos
-                WHERE erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix','tiny_sp_fix','denavita_fix')
+                WHERE erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix', 'tiny_sp', 'tiny_sp_fix','denavita_fix')
                   AND lower(status)='faturado'
                   AND data_faturamento_id >= $1`,
               [janela.corteInt]
             )
           : await guardClient.query(
-              `SELECT COUNT(*) AS n FROM fato_pedidos WHERE erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix','tiny_sp_fix','denavita_fix') AND lower(status)='faturado'`
+              `SELECT COUNT(*) AS n FROM fato_pedidos WHERE erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix', 'tiny_sp', 'tiny_sp_fix','denavita_fix') AND lower(status)='faturado'`
             );
         existentesFaturados = parseInt(r.rows[0]?.n ?? "0", 10);
       } finally {
@@ -220,7 +220,13 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
       }
     }
 
-    // DELETE principal: apaga Protheus + tiny_sp + tiny_bb (reimportados via Metabase).
+    // DELETE principal: apaga Protheus (reimportado via Metabase).
+    // ⚠️ `tiny_sp` está CONGELADO desde 29/set/2026 e entra nas listas de exclusão junto com
+    // a família `_fix`: o Data Mart arquivou as tabelas das contas Tiny Ápice/Barbours
+    // atacado SP (`raw.*` → `archive.*`, sem permissão para o Metabase), então os cards
+    // 19612/19613/19614 deixaram de existir como fonte. Sem estar aqui, o próximo full
+    // apagaria o `tiny_sp` de 2026 inteiro (R$ 5,0 mi) e não reporia nada.
+    // As 5 listas (guarda ×2, keepKeys, diff-delete, delete) têm que andar JUNTAS.
     //  • Modo FULL (skip off): apaga desde 20260101 — espelho exato da origem
     //    (linhas deletadas na origem somem aqui).
     //  • Modo SKIP (intraday): apaga só os últimos 60 dias — linhas antigas ficam e
@@ -250,7 +256,7 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
         // Chaves (identidade cross-ERP) que vieram neste run — o que NÃO estiver aqui
         // e estiver no escopo (>= corte, não-tiny) sumiu na origem → apagar.
         const keepKeys = unique
-          .filter((i) => !["tiny_es", "tiny_rj", "tiny_es_fix", "tiny_rj_fix", "tiny_sp_fix", "denavita_fix"].includes(i.erp_origem))
+          .filter((i) => !["tiny_es", "tiny_rj", "tiny_es_fix", "tiny_rj_fix", "tiny_sp", "tiny_sp_fix", "denavita_fix"].includes(i.erp_origem))
           .map((i) => ({
             erp_origem: i.erp_origem,
             filial_id: i.filial_id,
@@ -275,7 +281,7 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
           const delRes = await delClient.query(
             `DELETE FROM fato_pedidos f
                WHERE COALESCE(f.data_faturamento_id, f.data_pedido_id) >= $1
-                 AND f.erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix','tiny_sp_fix','denavita_fix')
+                 AND f.erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix', 'tiny_sp', 'tiny_sp_fix','denavita_fix')
                  AND NOT EXISTS (
                    SELECT 1 FROM _inc_keys k
                    WHERE k.erp_origem = f.erp_origem
@@ -304,7 +310,7 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
         await delClient.query(`
           DELETE FROM fato_pedidos
           WHERE COALESCE(data_faturamento_id, data_pedido_id) >= $1
-            AND erp_origem NOT IN ('tiny_es', 'tiny_rj', 'tiny_es_fix', 'tiny_rj_fix', 'tiny_sp_fix', 'denavita_fix')
+            AND erp_origem NOT IN ('tiny_es', 'tiny_rj', 'tiny_es_fix', 'tiny_rj_fix', 'tiny_sp', 'tiny_sp_fix', 'denavita_fix')
         `, [protheusCorteInt]);
         logger.info(`DELETE fato_pedidos (Protheus/SP/BB) >= ${protheusCorteInt} concluído${skipModeProtheus ? ` (janela ${janelaProtheus().dias}d — intraday)` : " (full)"}`);
       }
