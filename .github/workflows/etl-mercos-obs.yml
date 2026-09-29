@@ -1,0 +1,59 @@
+name: ETL mercos-obs
+
+# Puxa as observacoes dos pedidos Mercos (Metabase card 19024, db 48) e aplica em
+# mercos_vendas_detalhadas.observacoes / .observacoes_internas por (regiao, numero_pedido).
+# Idempotente (so UPDATE). Enfileira o alerta de "pedido concluido com observacao" no WhatsApp.
+#
+# Movido para este repo em 28/set/2026. Motivo: o gatilho `workflow_run` so enxerga workflow
+# do MESMO repositorio. Quando o ETL fato_pedidos veio para ca (26/set), a copia que ficou no
+# privado nunca mais disparou -- a ultima execucao foi 25/09 22:22 UTC.
+#
+# Log medido antes de mover: so imprime contagens (linhas do card, obs aplicadas, alertas).
+# Nenhum CNPJ nem nome de cliente -- ver docs/processos/migracao-actions-repo-publico.md.
+
+on:
+  workflow_run:
+    workflows: ["ETL fato_pedidos (full diário)", "ETL fato_pedidos (intraday skip)"]
+    types: [completed]
+  schedule:
+    # Rede de seguranca: se o fato parar (ou falhar), as obs continuam sendo repostas.
+    - cron: '17 11-23 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: etl-mercos-obs
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    # workflow_dispatch sempre livre; automatico so com a variavel ligada e, no workflow_run,
+    # so quando o fato terminou com SUCESSO.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.ETL_APOIO_ATIVO == 'true' &&
+       (github.event_name == 'schedule' || github.event.workflow_run.conclusion == 'success'))
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: etl/package-lock.json
+
+      - name: Install ETL dependencies
+        working-directory: etl
+        run: npm ci
+
+      - name: Run ETL mercos-obs
+        working-directory: etl
+        env:
+          METABASE_URL: ${{ secrets.METABASE_URL }}
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npx tsx mercos-obs/index.ts
