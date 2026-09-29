@@ -1,0 +1,71 @@
+name: Caso Desconto Boleto (painel de casos)
+
+# Robo: pedido Mercos CONCLUIDO + campo "Desconto Boleto (se aplicavel)" PREENCHIDO + ja
+# FATURADO (NF de venda do mesmo cliente) -> abre no painel de casos (CRM "Devolucoes
+# Conectadas") um caso com a ocorrencia "Alteracao de Boleto" do tipo DESCONTO e um comentario
+# padrao com a condicao informada. Nunca duas vezes o mesmo pedido: reserva atomica na Torre
+# (fn_caso_desconto_boleto_reservar) + chave gravada dentro do caso.
+#
+# Codigo: etl/caso-desconto-boleto/ -- COPIA do torre_b2b (o original mora la). Mexer aqui
+# exige levar a mudanca para os dois repos.
+# O que pode mudar sem deploy (ligado, data de inicio, limite por rodada, texto) mora na
+# tabela caso_desconto_boleto_config da Torre.
+#
+# Log medido antes de subir: so contagens -- nenhum CNPJ, nome de cliente ou numero de pedido.
+# O detalhe de cada caso fica em caso_desconto_boleto (banco privado da Torre).
+
+on:
+  schedule:
+    # 2x/dia: 10h20 e 15h20 BRT
+    - cron: '20 13,18 * * *'
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'dry = so diz o que faria (nao grava nada) | aplicar = abre os casos'
+        type: choice
+        options: [dry, aplicar]
+        default: dry
+      so_pedido:
+        description: 'Opcional: restringe a um pedido, no formato ES:1234'
+        required: false
+        default: ''
+
+concurrency:
+  group: caso-desconto-boleto
+  cancel-in-progress: false
+
+jobs:
+  robo:
+    # disparo manual sempre livre; o agendado so com a variavel ligada (falha fechando:
+    # sem a variavel, o cron nao roda)
+    if: github.event_name == 'workflow_dispatch' || vars.CASO_DESCONTO_BOLETO_ATIVO == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: etl/package-lock.json
+
+      - name: Install ETL dependencies
+        working-directory: etl
+        run: npm ci
+
+      - name: Testes das regras (prazo, etapas, mensagem)
+        working-directory: etl
+        run: npx tsx caso-desconto-boleto/teste.ts
+
+      - name: Rodar o robo
+        working-directory: etl
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DEVOLUCAO_SUPABASE_URL: ${{ secrets.DEVOLUCAO_SUPABASE_URL }}
+          DEVOLUCAO_SUPABASE_KEY: ${{ secrets.DEVOLUCAO_SUPABASE_KEY }}
+          MODO: ${{ github.event_name == 'schedule' && 'aplicar' || inputs.modo }}
+          SO_PEDIDO: ${{ inputs.so_pedido }}
+        run: npx tsx caso-desconto-boleto/index.ts
