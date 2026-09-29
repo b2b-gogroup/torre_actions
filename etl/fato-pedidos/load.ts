@@ -640,6 +640,23 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
     }
 
 
+    // Pedido com etiqueta "reprovado" no Tiny e ainda NÃO faturado sai da conta (excluido=true)
+    // e volta sozinho se faturar ou se a etiqueta sair. Migration 20260929. Mesmo motivo do
+    // duplicado acima: o DELETE de abertos + UPSERT recria a linha com excluido=false.
+    const repClient = await pool.connect();
+    try {
+      const r = await repClient.query("SELECT marcadas, revertidas FROM fn_aplica_pedido_reprovado()");
+      logger.info(
+        `fn_aplica_pedido_reprovado(): ${r.rows[0]?.marcadas ?? 0} linhas fora da conta, ` +
+        `${r.rows[0]?.revertidas ?? 0} devolvidas`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn("fn_aplica_pedido_reprovado() falhou (não crítico)", { error: msg });
+    } finally {
+      repClient.release();
+    }
+
     // Reaplica devoluções permanentes (fato_pedidos_devolucoes) após o upsert
     const devolClient = await pool.connect();
     try {

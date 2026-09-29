@@ -230,6 +230,68 @@ function normalizarMarcador(m: unknown): string {
  * mora no ledger `fato_pedidos_duplicado_sem_nf` (migration 20260731c) — o ledger
  * é a rede pros casos que nenhum marcador alcança.
  */
+/**
+ * Etiqueta "reprovado" (29/set/2026, pedido da coordenadora de vendas). Pedido reprovado e
+ * AINDA NÃO faturado sai da conta (funil/meta), mas continua na Torre com alerta no Gerencial;
+ * quem aplica é `fn_aplica_pedido_reprovado()` (load.ts), a partir de `tiny_pedido_reprovado`.
+ * ⚠️ "análise de crédito" NÃO é reprovado — segue contando (decisão do usuário). O casamento é
+ * por PALAVRA inteira ("reprovado"/"reprovada"), para não pegar marcador que só a contenha.
+ */
+function temMarcadorReprovado(marcadores: unknown): boolean {
+  if (!Array.isArray(marcadores)) return false;
+  return marcadores.some(m => /(^|[^a-z])reprovad[oa]s?([^a-z]|$)/.test(normalizarMarcador(m)));
+}
+
+/** Estado da etiqueta por pedido ABERTO visto neste run (com ou sem ela). */
+const reprovadoPorPedido = new Map<string, {
+  erp_origem: string; pedido_id: string; reprovado: boolean; marcadores: string[];
+  cnpj: string | null; cliente: string | null; valor_pedido: number | null; data_pedido: string | null;
+}>();
+
+function coletarReprovado(erp: string, det: Record<string, unknown>, cnpj: string, dataPed: string | null): void {
+  const pedidoId = String(det.numero ?? "").trim();
+  if (!pedidoId) return;
+  const marc = Array.isArray(det.marcadores)
+    ? (det.marcadores as unknown[])
+        .map(m => String(((m as Record<string, unknown>)?.marcador as Record<string, unknown> ?? m as Record<string, unknown>)?.descricao ?? "").trim())
+        .filter(Boolean)
+    : [];
+  reprovadoPorPedido.set(`${erp}|${pedidoId}`, {
+    erp_origem: erp,
+    pedido_id: pedidoId,
+    reprovado: temMarcadorReprovado(det.marcadores),
+    marcadores: marc,
+    cnpj: cnpj || null,
+    cliente: String((det.cliente as Record<string, unknown> | undefined)?.nome ?? "") || null,
+    valor_pedido: parseFloat(String(det.total_pedido ?? "")) || null,
+    data_pedido: dataPed || null,
+  });
+}
+
+/**
+ * Grava em `tiny_pedido_reprovado` o estado da etiqueta dos pedidos abertos vistos neste run.
+ * Pedido visto SEM a etiqueta também é gravado (reprovado=false): é assim que a retirada da
+ * etiqueta no Tiny devolve o pedido à conta. Chamada 1x em index.ts, ANTES do load (que roda
+ * `fn_aplica_pedido_reprovado`). Não-crítica: falhar aqui só atrasa a regra, não a carga.
+ */
+export async function flushReprovadosTiny(): Promise<void> {
+  if (reprovadoPorPedido.size === 0) return;
+  const sb = getSupabaseAdmin();
+  const linhas = Array.from(reprovadoPorPedido.values());
+  const LOTE = 300;
+  for (let i = 0; i < linhas.length; i += LOTE) {
+    const chunk = linhas.slice(i, i + LOTE).map(l => ({ ...l, visto_em: new Date().toISOString() }));
+    const { error } = await sb.from("tiny_pedido_reprovado").upsert(chunk, { onConflict: "erp_origem,pedido_id" });
+    if (error) { logger.warn(`tiny_pedido_reprovado: gravação falhou (${error.message})`); return; }
+  }
+  const rep = linhas.filter(l => l.reprovado);
+  logger.info(
+    `Tiny API: etiqueta "reprovado" — ${rep.length} de ${linhas.length} pedidos abertos` +
+      (rep.length ? ` (${rep.map(r => `${r.erp_origem}:${r.pedido_id}`).join(", ")})` : "")
+  );
+  reprovadoPorPedido.clear();
+}
+
 function temMarcadorNaoFaturar(marcadores: unknown): boolean {
   if (!Array.isArray(marcadores)) return false;
   const INTENCAO = /nao\s*fatur|nao\s*fazer\s*nota|sem\s*nota\s*fiscal/;
@@ -919,6 +981,10 @@ export async function fetchPedidosAbertos(
     // faturadas, no mesmo registro (a chave é o pedido).
     coletarUplaces(cfg.erp, det, null);
     const dataPed   = dataBrParaIso(det.data_pedido);
+    // Etiqueta "reprovado": o pedido ENTRA no fato normalmente e `fn_aplica_pedido_reprovado`
+    // o tira da conta depois — assim ele continua visível (alerta no Gerencial) e volta a
+    // contar sozinho se faturar ou se a etiqueta sair.
+    coletarReprovado(cfg.erp, det as Record<string, unknown>, cnpj, dataPed ? String(dataPed) : null);
 
     const valorTotal = parseFloat(String(det.total_pedido ?? 0)) || 0;
     const valorFrete = parseFloat(String(det.valor_frete  ?? 0)) || 0;

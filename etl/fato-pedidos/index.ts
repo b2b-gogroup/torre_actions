@@ -3,7 +3,7 @@ import { updateWatermark } from "../shared/watermark.js";
 import { extractAll } from "./extract.js";
 import { transformAll } from "./transform.js";
 import { loadBatches } from "./load.js";
-import { flushEmailsClienteTiny, flushUplacesTiny } from "./extract-tiny-apice.js";
+import { flushEmailsClienteTiny, flushReprovadosTiny, flushUplacesTiny } from "./extract-tiny-apice.js";
 
 const WORKFLOW_NAME = "etl_fato_pedidos";
 
@@ -29,6 +29,11 @@ async function main() {
     // Idem: o número do pedido no Uplaces (tiny_pedido_uplaces) é busca na tela, não faturamento.
     try { await flushUplacesTiny(); }
     catch (e) { logger.warn(`flushUplacesTiny falhou (não-crítico): ${e}`); }
+
+    // Etiqueta "reprovado" do Tiny (tiny_pedido_reprovado). TEM de vir antes do load: é lá que
+    // fn_aplica_pedido_reprovado() lê esta tabela. Falhar aqui só atrasa a regra.
+    try { await flushReprovadosTiny(); }
+    catch (e) { logger.warn(`flushReprovadosTiny falhou (não-crítico): ${e}`); }
 
     const allItems = await transformAll(sources);
 
