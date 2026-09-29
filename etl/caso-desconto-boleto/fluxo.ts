@@ -201,9 +201,13 @@ export async function processar(
   const faltando = ref.obrigatorios.filter((k) => k !== "data_da_1_parcela" && (campos[k] === undefined || campos[k] === ""));
   if (faltando.length) throw new Error(`campos obrigatórios sem valor: ${faltando.join(", ")}`);
 
+  // O caso nasce ABERTO na 1ª etapa, "Dados da Alteração" (decisão da usuária, 29/set/2026):
+  // o robô preenche o formulário, mas quem é dono da etapa confere e avança — o robô não conclui
+  // etapa nenhuma. As etapas seguintes já nascem como linhas pendentes (a tela cria todas as que
+  // entram no fluxo de uma vez), e "Aprovação do Desconto" entra porque tipo_alteracao='desconto'.
   const etapas = ref.etapas.filter((e) => etapaEntra(e.inclusion_condition, campos));
-  const [etapaDados, etapaAtual] = etapas;
-  if (!etapaAtual) throw new Error("o fluxo não tem etapa depois de 'Dados da Alteração'");
+  const etapaAtual = etapas[0];
+  if (!etapaAtual || etapaAtual.key !== ETAPA_DADOS) throw new Error(`a 1ª etapa do fluxo não é '${ETAPA_DADOS}'`);
 
   if (!aplicar) {
     preview("CASO", casoAberto
@@ -211,8 +215,8 @@ export async function processar(
       : { acao: "CRIAR caso novo", subject: ref.tipoCaso.name, assignee_team: ref.tipoCaso.default_team,
           filial: c.regiao, nf_key: nfKey, conflito_nf: casosNf.length > 0, cliente_no_painel: !!cli });
     preview("OCORRÊNCIA", { tipo: "Alteração de Boleto", campos });
-    preview("ETAPAS", etapas.map((e, i) => ({ etapa: e.name, status: i === 0 ? "concluido" : "pendente", atual: i === 1,
-      prazo: i === 1 ? prazoHorasUteis(new Date(), e.sla_hours ?? 8).toISOString() : null })));
+    preview("ETAPAS", etapas.map((e, i) => ({ etapa: e.name, status: "pendente", atual: i === 0,
+      prazo: i === 0 ? prazoHorasUteis(new Date(), e.sla_hours ?? 8).toISOString() : null })));
     preview("COMENTÁRIO", mensagem);
     return casoAberto ? "planejado_anexar" : "planejado_novo";
   }
@@ -285,10 +289,11 @@ export async function processar(
     const t0 = new Date().toISOString();
     ok(await painel.from("occurrence_stage_states").insert(etapas.map((e, i) => ({
       occurrence_id: occ!.id, stage_id: e.id, sort_order: e.sort_order, sla_hours: e.sla_hours,
-      status: i === 0 ? "concluido" : "pendente",
-      entered_at: i <= 1 ? t0 : null,
-      exited_at: i === 0 ? t0 : null,
-      sla_deadline: i === 1 ? prazoHorasUteis(new Date(t0), e.sla_hours ?? 8).toISOString() : null,
+      // só a 1ª etapa (a atual) tem entrada e prazo; nenhuma é concluída pelo robô
+      status: "pendente",
+      entered_at: i === 0 ? t0 : null,
+      exited_at: null,
+      sla_deadline: i === 0 ? prazoHorasUteis(new Date(t0), e.sla_hours ?? 8).toISOString() : null,
       cumulative_seconds: 0,
     }))), "criação das etapas");
   }
