@@ -249,7 +249,12 @@ export async function processar(
       requester_name: AUTOR, requester_email: EMAIL_ROBO, created_by: PAPEL,
       case_type_id: ref.tipoCaso.id, nf_number: String(nfInt), nf_numero: nfInt,
       filial: c.regiao, erp_origem: "protheus", erp_confirmado: true,
-      nf_key: nfKey, nf_key_conflito: casosNf.length > 0,
+      // ⚠️ `nf_key` NÃO vai: é coluna CALCULADA pelo painel (GENERATED — P/T + filial +
+      // nf_numero; bate em 918 de 918 casos). Mandar valor nela dá 428C9 "cannot insert a
+      // non-DEFAULT value into column nf_key" — foi o erro da 1ª rodada real (29/set/2026),
+      // que queimou o número CASE-2026-0919 sem criar caso. `nf_numero` é coluna comum (difere
+      // do nf_number em 3 casos editados à mão) e segue sendo enviada.
+      nf_key_conflito: casosNf.length > 0,
     }).select("id,display_id").single(), "criação do caso") as { id: string; display_id: string };
     casoId = caso.id; casoDisplay = caso.display_id;
     await anotar({ caso_id: casoId, caso_display_id: casoDisplay }); // antes de seguir: retomada sabe o caso
