@@ -1,6 +1,6 @@
 name: Caso Desconto Boleto (painel de casos)
 
-# Robo: pedido Mercos CONCLUIDO + campo "Desconto Boleto (se aplicavel)" PREENCHIDO + ja
+# Robo (1x/dia, 15h20 BRT): pedido Mercos CONCLUIDO + campo "Desconto Boleto (se aplicavel)" PREENCHIDO + ja
 # FATURADO (NF de venda do mesmo cliente) -> abre no painel de casos (CRM "Devolucoes
 # Conectadas") um caso com a ocorrencia "Alteracao de Boleto" do tipo DESCONTO e um comentario
 # padrao com a condicao informada. Nunca duas vezes o mesmo pedido: reserva atomica na Torre
@@ -16,8 +16,8 @@ name: Caso Desconto Boleto (painel de casos)
 
 on:
   schedule:
-    # 2x/dia: 10h20 e 15h20 BRT
-    - cron: '20 13,18 * * *'
+    # 1x/dia: 15h20 BRT (decisao da usuaria, 29/set/2026). O GitHub pode atrasar alguns minutos.
+    - cron: '20 18 * * *'
   workflow_dispatch:
     inputs:
       modo:

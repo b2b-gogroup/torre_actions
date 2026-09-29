@@ -1,7 +1,7 @@
 /**
  * Robô "Desconto Boleto → caso no painel".
  *
- * Duas vezes por dia: para cada pedido Mercos CONCLUÍDO, com o campo "Desconto Boleto (se
+ * Uma vez por dia (15h20 BRT): para cada pedido Mercos CONCLUÍDO, com o campo "Desconto Boleto (se
  * aplicável)" PREENCHIDO e já FATURADO (NF de venda do mesmo cliente), abre no painel de casos
  * (CRM "Devoluções Conectadas") um caso com a ocorrência "Alteração de Boleto" do tipo
  * DESCONTO e um comentário padrão com a condição informada. Nunca duas vezes o mesmo pedido.
