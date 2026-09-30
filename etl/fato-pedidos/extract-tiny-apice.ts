@@ -587,6 +587,11 @@ export async function flushEmailsClienteTiny(): Promise<void> {
  * Upsert idempotente; falha aqui é não-crítica (só perde a otimização do próximo run).
  */
 async function registrarNFsProcessadas(erp: string, numeros: string[]): Promise<void> {
+  // ⚠️ Teste/dev NUNCA pode marcar nota como processada: o cache diz "esta nota já está no banco", e
+  // um teste que só LÊ a API mas registra a nota faz o ETL real pulá-la para sempre (30/09/2026: 18
+  // notas, ~R$ 119 mil, sumiram do faturado por causa de um teste local). Com
+  // `ETL_NF_CACHE_SOMENTE_LEITURA=true` a leitura continua e a escrita é ignorada.
+  if (process.env.ETL_NF_CACHE_SOMENTE_LEITURA === "true") return;
   const unicos = Array.from(new Set(numeros.map(n => String(n ?? "").trim()).filter(Boolean)));
   if (unicos.length === 0) return;
   const sb = getSupabaseAdmin();
