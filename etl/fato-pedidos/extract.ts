@@ -337,6 +337,16 @@ export async function extractAll(): Promise<ExtractedData> {
     }
   }
 
+  // ── Fase real do WMS nos pedidos do card 19610 (30/set/2026) ──────────────
+  // Depois dos dois blocos do Mercos, para cobrir tanto as linhas do card quanto as geradas.
+  // Não-crítico e com saída própria (`ETL_FASE_WMS=false`): falhar devolve o status do Mercos.
+  try {
+    const { aplicarFaseWms } = await import("./fase-wms.js");
+    await aplicarFaseWms(data.protheusPedidos as Record<string, unknown>[]);
+  } catch (e) {
+    logger.warn(`Fase WMS nos pedidos do card falhou (não-crítico): ${e}`);
+  }
+
   if (errors.length > 0) {
     logger.error(`Extração Metabase: ${errors.length} fonte(s) falharam`, { errors });
     // dimVendedor/dimCliente/dimProduto: sem eles o transform quebra.

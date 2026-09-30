@@ -738,6 +738,27 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
       cargaClient.release();
     }
 
+    // Diário do pipeline (30/set/2026): o que entrou / mudou de etapa / saiu do funil e POR QUÊ.
+    // Roda DEPOIS do carimbo acima pela mesma razão (status já reescrito pelos passos de
+    // cancelamento). Não crítico. Rollback: docs/processos/funil-status-wms-fase.md.
+    const eventoClient = await pool.connect();
+    try {
+      const ev = await eventoClient.query(
+        "SELECT * FROM fn_registra_eventos_pedidos($1::timestamptz, $2)",
+        [(opts.cargaEm ?? new Date()).toISOString(), opts.cargaRun ?? null]
+      );
+      const e = ev.rows[0];
+      logger.info(
+        `fn_registra_eventos_pedidos(): entrou ${e?.entrou ?? 0} · mudou etapa ${e?.mudou_etapa ?? 0} · ` +
+        `saiu ${e?.saiu ?? 0}${e?.baseline ? ` · baseline ${e.baseline}` : ""}`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn("fn_registra_eventos_pedidos() falhou (não crítico)", { error: msg });
+    } finally {
+      eventoClient.release();
+    }
+
     // ANALYZE pós-carga — DELETE+INSERT deixa stats do planner velhas; sem isso o
     // planner erra plano (seq scan na fato 70k) → spike de CPU/IO no nano. Barato.
     const analyzeClient = await pool.connect();

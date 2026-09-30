@@ -58,6 +58,7 @@ import { logger } from "../shared/logger.js";
 import { fetchMetabaseCard } from "../shared/metabase-client.js";
 import { fetchSupabaseTable } from "../shared/supabase-admin.js";
 import { janelaProtheus } from "./janela-protheus.js";
+import { FASE_WMS_STATUS, FASE_WMS_JA_FATURADO, type LinhaWms } from "./fase-wms.js";
 
 /** SKU sentinela — ver `db/migrations/20260917_produto_pedido_sem_detalhe.sql`. */
 export const SKU_SEM_DETALHE = "MC00000";
@@ -85,6 +86,10 @@ const REGIAO_FILIAL: Record<string, string> = { ES: "CD ES", RJ: "CD RJ" };
  * — é pipeline vivo. Eles ficam de fora do funil e visíveis no Mercos, como sempre foi.
  */
 const STATUS_PIPELINE = new Set([
+  // "Captado" (30/set/2026, pedido do usuário): o pedido acabou de ser concluído no Mercos e o
+  // WMS talvez ainda não o conheça — entra como Preparando para envio (ver STATUS_MERCOS_TORRE).
+  // Com fase no WMS, a fase ganha; sem ela, vale o Mercos.
+  "Captado",
   "Em Separação",
   "Separado",
   "Aguardando Faturamento",
@@ -97,26 +102,14 @@ const STATUS_PIPELINE = new Set([
 const TIPOS_ACEITOS = new Set(["Venda", "Bonificação"]);
 
 /**
- * Fase do WMS → status da Torre. A fase do Corpem é mais confiável que o
- * `status_personalizado` do Mercos, que depende do middleware para ser atualizado.
- * ⚠️ `N.F. Conf.` e `Emb. Conf.` significam que a nota saiu: o pedido é DESCARTADO
- * (o faturado entra pelo trilho do Protheus, com os itens reais).
+ * Fase do WMS → etapa da Torre: mapeamento em `fase-wms.ts` (fonte única, compartilhada com
+ * o card antigo 19610). ⚠️ `N.F. Conf.`/`Emb. Conf.`/`CkoVol.*` = nota já saiu: o pedido é
+ * DESCARTADO (o faturado entra pelo trilho do Protheus, com os itens reais).
  */
-const FASE_WMS_STATUS: Record<string, string> = {
-  "Em Digit.": "Em separação",
-  "A Sep.": "Em separação",
-  "Em Sep.": "Em separação",
-  "Sep. Ok": "Aguardando Faturamento",
-  "Sep. Conf.": "Aguardando Faturamento",
-  "Em Cko.": "Aguardando Faturamento",
-  "Cko. Ok": "Aguardando Faturamento",
-  "Em CkoVol.": "Aguardando Faturamento",
-  "CkoVol. Ok": "Aguardando Faturamento",
-};
-const FASE_WMS_JA_FATURADO = new Set(["N.F. Conf.", "Emb. Conf."]);
 
 /** Status do Mercos → status da Torre, quando o WMS não conhece o pedido. */
 const STATUS_MERCOS_TORRE: Record<string, string> = {
+  "Captado": "Em separação",
   "Em Separação": "Em separação",
   "Separado": "Aguardando Faturamento",
   "Aguardando Faturamento": "Aguardando Faturamento",
@@ -154,15 +147,6 @@ interface LinhaItem {
   quantidade: number | string | null;
   preco_liquido: number | string | null;
   subtotal: number | string | null;
-}
-
-interface LinhaWms {
-  numero_pedido_cliente: string | null;
-  regiao: string | null;
-  situacao_fase: string | null;
-  numero_nf: string | null;
-  /** Unidades do pedido inteiro. Medido: sempre preenchido e > 0 (min 1, max 63.072). */
-  qtde_total: number | string | null;
 }
 
 export interface ResultadoPipelineMercos {
