@@ -1018,6 +1018,7 @@ export async function fetchPedidosAbertos(
   const rows: Record<string, unknown>[] = [];
   let skipped = 0;
   const pedidosComNotaNaoFaturada: string[] = [];
+  const numerosMantidosPorNota = new Set<string>();   // nº dos pedidos mantidos só pela regra da nota
 
   // Filtra pedidos irrelevantes antes de buscar detalhes
   const pedsFiltrados = pedsLista.filter(pedItem => {
@@ -1045,6 +1046,7 @@ export async function fetchPedidosAbertos(
           // Nota pendente, rejeitada, apagada ou emitida depois da leitura das notas: o pedido
           // CONTINUA no funil — senão o valor some dos dois lados (ver `notasDoRun`).
           pedidosComNotaNaoFaturada.push(`#${pedHeader.numero} R$ ${(parseFloat(String(det.total_pedido ?? 0)) || 0).toFixed(2)}`);
+          numerosMantidosPorNota.add(String(det.numero ?? pedHeader.numero ?? "").trim());
         }
         // Duplicata logística: a NF é a do pedido antigo. Contar aqui = contar 2x.
         if (temMarcadorNaoFaturar(det.marcadores)) {
@@ -1060,14 +1062,48 @@ export async function fetchPedidosAbertos(
     CONCURRENCY
   );
 
+  // ── Última porta contra DUPLICAR ──────────────────────────────────────────────────────────
+  // Pedido mantido só pela regra da nota (`notasDoRun`) NUNCA pode coexistir com linha FATURADA do
+  // mesmo pedido no banco: se já existe faturado para (erp_origem, pedido), ele sai do funil.
+  // Falha fechando: se a consulta não responder, TODOS os mantidos saem (comportamento antigo) —
+  // preferimos o buraco de sempre a contar a mesma venda duas vezes.
+  let descartarMantidos: Set<string> | "todos" = new Set<string>();
+  if (numerosMantidosPorNota.size > 0) {
+    try {
+      const { data: fat, error } = await getSupabaseAdmin()
+        .from("fato_pedidos")
+        .select("pedido_id")
+        .eq("erp_origem", cfg.erp)
+        .in("pedido_id", Array.from(numerosMantidosPorNota))
+        .ilike("status", "faturado")
+        .eq("excluido", false)
+        .range(0, 9999);
+      if (error) throw new Error(error.message);
+      descartarMantidos = new Set((fat ?? []).map(r => String((r as { pedido_id: string }).pedido_id).trim()));
+    } catch (e) {
+      descartarMantidos = "todos";
+      logger.warn(`Tiny API ${cfg.erp}: não consegui checar faturado no banco (${e}) — pedidos mantidos pela regra da nota saem do funil (comportamento antigo)`);
+    }
+  }
+  const detalhesPedFinal = detalhesPed.map(item => {
+    if (!item) return item;
+    const num = String(item.det.numero ?? item.pedHeader.numero ?? "").trim();
+    if (!numerosMantidosPorNota.has(num)) return item;
+    if (descartarMantidos === "todos" || descartarMantidos.has(num)) {
+      logger.info(`Tiny API ${cfg.erp}: pedido ${num} já tem linha FATURADA no banco — não mantido no funil (evita contar 2x)`);
+      return null;
+    }
+    return item;
+  });
+
   if (pedidosComNotaNaoFaturada.length > 0) {
     logger.info(
       `Tiny API ${cfg.erp}: ${pedidosComNotaNaoFaturada.length} pedido(s) com nota ligada que NÃO é faturado ` +
-      `(pendente/rejeitada/apagada/emitida agora) — MANTIDOS no funil: ${pedidosComNotaNaoFaturada.join(", ")}`
+      `(pendente/rejeitada/apagada/emitida agora) — candidatos a MANTER no funil: ${pedidosComNotaNaoFaturada.join(", ")}`
     );
   }
 
-  for (const item of detalhesPed) {
+  for (const item of detalhesPedFinal) {
     if (!item) { skipped++; continue; }
     const { pedHeader, det } = item;
 
