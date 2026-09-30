@@ -666,6 +666,33 @@ export interface TinyApiceConfig {
 }
 
 /**
+ * FOTOGRAFIA DAS NOTAS DESTE RUN, usada por `fetchPedidosAbertos` (30/09/2026).
+ *
+ * Por que existe: o pedido aberto que aponta para uma nota (`id_nota_fiscal` ≠ 0) era tratado como
+ * "já faturado" e SAÍA do funil — mas o faturado só aceita nota AUTORIZADA (com chave de acesso)
+ * que estava na lista de notas lida minutos antes. Quando a nota não cumpre isso, o pedido some
+ * dos DOIS lados e o valor desaparece do total até alguém reemitir/autorizar (caso 30924, R$ 270 mil,
+ * dois dias fora) ou até a próxima carga (caso 1900, R$ 24 mil: nota emitida entre a leitura das
+ * notas e a dos pedidos). Regra nova: o pedido só sai do funil se a nota dele, NESTA leitura, é
+ * autorizada (vai entrar como faturado) ou cancelada (comportamento de sempre). Senão continua contado.
+ * `ETL_PEDIDO_COM_NOTA_SEM_FATURADO=false` volta ao comportamento anterior.
+ */
+const notasDoRun = new Map<string, { inicio: string; autorizadas: Set<string>; canceladas: Set<string> }>();
+
+/** Só para teste (etl/dev/teste-regra-nota.ts): injeta a fotografia de notas. */
+export function __definirNotasDoRunParaTeste(erp: string, inicio: string, autorizadas: string[], canceladas: string[]): void {
+  notasDoRun.set(erp, { inicio, autorizadas: new Set(autorizadas), canceladas: new Set(canceladas) });
+}
+
+export function notaDoPedidoJaContaComoFaturado(erp: string, idNf: string, dataPedidoIso: string | null): boolean {
+  if (process.env.ETL_PEDIDO_COM_NOTA_SEM_FATURADO === "false") return true;
+  const snap = notasDoRun.get(erp);
+  if (!snap) return true;                                        // sem leitura de notas neste run: comportamento antigo
+  if (!dataPedidoIso || dataPedidoIso < snap.inicio) return true; // nota pode estar fora da janela lida: não arrisca dupla contagem
+  return snap.autorizadas.has(idNf) || snap.canceladas.has(idNf);
+}
+
+/**
  * Busca NFs emitidas no período e retorna itens no formato dos cards Metabase.
  * Inclui: Vendas (tipo_operacao=Venda) e Devoluções (tipo_operacao=Devolucao).
  * Exclui: Canceladas (sit=3), Bonificações, Transferências.
@@ -688,6 +715,20 @@ export async function fetchNFsFaturadas(
   );
 
   logger.info(`Tiny API ${cfg.erp}: ${nfsLista.length} NFs na lista — buscando detalhes...`);
+
+  // Fotografia para `fetchPedidosAbertos` (ver `notasDoRun`): ids das notas de SAÍDA autorizadas
+  // (com chave de acesso) e das canceladas, tirada aqui, ANTES de qualquer descarte.
+  {
+    const autorizadas = new Set<string>();
+    const canceladas = new Set<string>();
+    for (const n of nfsLista) {
+      const h = ((n as Record<string, unknown>).nota_fiscal as Record<string, unknown>) ?? (n as Record<string, unknown>);
+      if (String(h.tipo ?? "").toUpperCase() !== "S" || !h.id) continue;
+      if (String(h.situacao ?? "") === "3") canceladas.add(String(h.id));
+      else if (String(h.chave_acesso ?? "").trim()) autorizadas.add(String(h.id));
+    }
+    notasDoRun.set(cfg.erp, { inicio: dataInicio, autorizadas, canceladas });
+  }
 
   const rows: Record<string, unknown>[] = [];
   let skipped = 0;
@@ -976,6 +1017,7 @@ export async function fetchPedidosAbertos(
 
   const rows: Record<string, unknown>[] = [];
   let skipped = 0;
+  const pedidosComNotaNaoFaturada: string[] = [];
 
   // Filtra pedidos irrelevantes antes de buscar detalhes
   const pedsFiltrados = pedsLista.filter(pedItem => {
@@ -996,7 +1038,14 @@ export async function fetchPedidosAbertos(
         ?? pedItem as Record<string, unknown>;
       try {
         const det = await tinyObterPedido(cfg.token, String(pedHeader.id));
-        if (det.id_nota_fiscal && String(det.id_nota_fiscal) !== "0") return null; // já faturado
+        if (det.id_nota_fiscal && String(det.id_nota_fiscal) !== "0") {
+          const idNf = String(det.id_nota_fiscal);
+          // Nota autorizada/cancelada nesta leitura: o pedido sai do funil (já é/será faturado).
+          if (notaDoPedidoJaContaComoFaturado(cfg.erp, idNf, dataBrParaIso(det.data_pedido))) return null;
+          // Nota pendente, rejeitada, apagada ou emitida depois da leitura das notas: o pedido
+          // CONTINUA no funil — senão o valor some dos dois lados (ver `notasDoRun`).
+          pedidosComNotaNaoFaturada.push(`#${pedHeader.numero} R$ ${(parseFloat(String(det.total_pedido ?? 0)) || 0).toFixed(2)}`);
+        }
         // Duplicata logística: a NF é a do pedido antigo. Contar aqui = contar 2x.
         if (temMarcadorNaoFaturar(det.marcadores)) {
           logger.info(`${cfg.erp}: pedido ${pedHeader.numero} ignorado — marcador de "não faturar"/NF de outro pedido (duplicata logística)`);
@@ -1010,6 +1059,13 @@ export async function fetchPedidosAbertos(
     },
     CONCURRENCY
   );
+
+  if (pedidosComNotaNaoFaturada.length > 0) {
+    logger.info(
+      `Tiny API ${cfg.erp}: ${pedidosComNotaNaoFaturada.length} pedido(s) com nota ligada que NÃO é faturado ` +
+      `(pendente/rejeitada/apagada/emitida agora) — MANTIDOS no funil: ${pedidosComNotaNaoFaturada.join(", ")}`
+    );
+  }
 
   for (const item of detalhesPed) {
     if (!item) { skipped++; continue; }
