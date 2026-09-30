@@ -266,6 +266,13 @@ export const skuFixMap: Record<string, Record<string, string>> = {
   "35234": { AP: "AP99073" }, // ESC PIRULITO 4018 CORAL BRASIL (REFIL)
   "35235": { AP: "AP99074" }, // ESC PIRULITO 4018 VERDE BRASIL (REFIL)
   "35236": { AP: "AP99075" }, // ESC PIRULITO 4018 DOURADO BRASIL (REFIL)
+  // Linha AP 3000 (30/set/2026, migration 20260930c) — códigos Tiny sem de-para, achados no log
+  // do ETL ("produto_id sem match em dim_produto"). Nome/EAN/preço vieram da API do Tiny.
+  "20915": { AP: "AP01116" }, // COND MSC RECONSTRUTORA AP 3000 300g
+  "20916": { AP: "AP01117" }, // COND LEAVE IN AP 3000 200g
+  "20917": { AP: "AP01118" }, // COND SÉRUM RESGATE CAPILAR AP 3000 100mL
+  "20918": { AP: "AP01119" }, // COND HAIR BALM 100g
+  "35238": { AP: "AP99076" }, // SACHE COND LEAVE IN AP 3000 10g
 };
 
 /** Campos numéricos que precisam de normalização BR → decimal */
