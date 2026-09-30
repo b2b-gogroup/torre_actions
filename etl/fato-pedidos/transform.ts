@@ -481,11 +481,19 @@ function normalizeTiny(
         ? (itemValue / totalProdutos) * descontoTotal
         : 0;
 
+    // tiny_es/tiny_rj (API) já chegam rateados ao centavo pelo extract (30/set/2026):
+    // `valor_total_item` é o líquido do item e `valor_desconto` a parte dele do desconto.
+    // Ratear de novo aqui abateria o desconto em dobro. Só tiny_sp (card Metabase) segue
+    // o caminho antigo.
+    const jaRateado = d.desconto_rateado === true;
+
     // Para pedidos faturados: aplica desconto real. Pipeline: mantém valor de tabela.
-    const valorTotalFinal =
-      statusLower === "faturado" && descontoProporcional > 0
+    const valorTotalFinal = jaRateado
+      ? itemValue
+      : statusLower === "faturado" && descontoProporcional > 0
         ? Math.max(0, itemValue - descontoProporcional)
         : itemValue;
+    const descontoFinal = jaRateado ? descontoTotal : descontoProporcional;
 
     const pedidoIdRaw = String(d.pedido_mercos || "").trim();
     const pedidoIdFinal = pedidoIdRaw
@@ -536,7 +544,7 @@ function normalizeTiny(
       quantidade: normalizarNumero(d.quantidade),
       valor_unitario: normalizarNumero(d.valor_unitario),
       valor_total: valorTotalFinal,
-      valor_desconto: descontoProporcional,
+      valor_desconto: descontoFinal,
       valor_frete: normalizarNumero(d.valor_frete),
       uf_id: str(d.uf_cliente),
       pedido_erp_id: str(d.pedido_tiny),

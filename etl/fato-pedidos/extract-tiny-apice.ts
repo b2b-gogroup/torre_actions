@@ -607,6 +607,55 @@ function proporcionalItem(
   return valorItem * (valorNota / somaItens);
 }
 
+/**
+ * Rateia `total` (R$) entre os itens na proporção de `pesos`, em CENTAVOS, e garante que a
+ * soma das partes seja exatamente `total` — o resto do arredondamento vai para os itens de
+ * maior fração (maior resto). Sem isso cada item arredondava sozinho e o pedido ficava a
+ * ±R$ 0,03 do total da NF no Tiny (medido em 30/set/2026: 30899 = 5.806,63 no Tiny contra
+ * 5.806,63 somando itens+frete, mas com 5.655,67/150,96 em vez de 5.655,63/151,00).
+ */
+export function ratearCentavos(pesos: number[], total: number): number[] {
+  const sinal  = total < 0 ? -1 : 1;
+  const totalC = Math.round(Math.abs(total) * 100);
+  const somaP  = pesos.reduce((a, p) => a + p, 0);
+  if (pesos.length === 0) return [];
+  if (somaP <= 0 || totalC === 0) return pesos.map(() => 0);
+  const brutos = pesos.map((p) => (p / somaP) * totalC);
+  const partes = brutos.map((b) => Math.floor(b));
+  let resto = totalC - partes.reduce((a, p) => a + p, 0);
+  const ordem = brutos
+    .map((b, i) => ({ i, frac: b - Math.floor(b), peso: pesos[i] }))
+    .sort((a, b) => b.frac - a.frac || b.peso - a.peso || a.i - b.i);
+  for (let k = 0; resto > 0; k = (k + 1) % ordem.length) { partes[ordem[k].i] += 1; resto--; }
+  return partes.map((c) => (sinal * c) / 100);
+}
+
+/**
+ * Valores por item de um pedido/NF do Tiny, já rateados e fechando ao centavo com o Tiny:
+ *   Σ bruto     = "Total produtos"
+ *   Σ desconto  = "Desconto" do cabeçalho
+ *   Σ líquido   = Total produtos − Desconto
+ *   Σ frete     = "Frete pago pelo cliente"
+ *   Σ líquido + Σ frete = "Total da venda"
+ * O `transform` NÃO rateia de novo quando a linha vem com `desconto_rateado: true`.
+ */
+function ratearItensTiny(itens: unknown[], valorDesc: number, valorFrete: number) {
+  const brutos = itens.map((i) => {
+    const item = ((i as Record<string, unknown>).item ?? i) as Record<string, unknown>;
+    const qtd  = parseFloat(String(item.quantidade ?? 0)) || 0;
+    const unit = parseFloat(String(item.valor_unitario ?? 0)) || 0;
+    return Math.round(qtd * unit * 100) / 100;
+  });
+  const descontos = ratearCentavos(brutos, valorDesc);
+  const fretes    = ratearCentavos(brutos, valorFrete);
+  return brutos.map((b, i) => ({
+    bruto:    b,
+    desconto: descontos[i],
+    liquido:  Math.round((b - descontos[i]) * 100) / 100,
+    frete:    fretes[i],
+  }));
+}
+
 // ── Extração de NFs faturadas ─────────────────────────────────────────────────
 
 export interface TinyApiceConfig {
@@ -828,11 +877,11 @@ export async function fetchNFsFaturadas(
     // Em situação transitória os itens/valores ainda podem mudar → relê no próximo run.
     if (situacaoTerminal(det, nfHeader)) processadasOk.push(nfNum);
 
-    // Soma bruta dos itens (para proporcionalizar desconto)
-    const somaItens = itens.reduce((acc: number, i) => {
-      const item = ((i as Record<string, unknown>).item ?? i) as Record<string, unknown>;
-      return acc + (parseFloat(String(item.valor_unitario ?? 0)) * parseFloat(String(item.quantidade ?? 0)));
-    }, 0);
+    // Rateio de desconto e frete fechando AO CENTAVO com a NF (30/set/2026). Antes o
+    // transform rateava o desconto e aqui o frete era rateado, cada item arredondando
+    // sozinho → pedido a ±R$ 0,03 do Tiny. Agora rateia aqui, uma vez, e manda
+    // `desconto_rateado: true` para o transform não refazer.
+    const rateio = ratearItensTiny(itens, valorDesc, valorFrete);
 
     for (let seq = 0; seq < itens.length; seq++) {
       const itemWrap = itens[seq] as Record<string, unknown>;
@@ -840,14 +889,7 @@ export async function fetchNFsFaturadas(
 
       const qtd      = parseFloat(String(item.quantidade   ?? 0)) || 0;
       const unitario = parseFloat(String(item.valor_unitario ?? 0)) || 0;
-      const bruto    = qtd * unitario;
-
-      // transform.ts (normalizeTiny) espera:
-      //   valor_total_item = bruto sem desconto (qtd × unitario)
-      //   valor_desconto   = desconto TOTAL da NF repetido em cada item
-      //   valor_frete      = frete TOTAL da NF repetido em cada item
-      // A proporcionalização é feita pelo transform — não duplicar aqui.
-      const freteItem = somaItens > 0 ? valorFrete * (bruto / somaItens) : 0;
+      const r        = rateio[seq];
 
       rows.push({
         marca:               cfg.marca,
@@ -868,10 +910,11 @@ export async function fetchNFsFaturadas(
         descricao_produto:   String(item.descricao ?? ""),
         quantidade:          qtd,
         valor_unitario:      unitario,
-        valor_total_item:    Math.round(bruto * 100) / 100,   // bruto sem desconto
-        valor_nota:          Math.round((valorNota - valorFrete) * 100) / 100, // sem frete: totalProdutos = somaItens exato
-        valor_desconto:      Math.round(valorDesc * 100) / 100, // total NF, transform proporcionaliza
-        valor_frete:         Math.round(freteItem * 100) / 100,
+        valor_total_item:    r.liquido,   // já com o desconto do cabeçalho rateado
+        valor_nota:          Math.round((valorNota - valorFrete) * 100) / 100, // sem frete
+        valor_desconto:      r.desconto,  // parte deste item do desconto da NF
+        valor_frete:         r.frete,
+        desconto_rateado:    true,
         // ⚠️ ORDEM INVERTIDA até 08/ago/2026: `meio_pagamento` vinha PRIMEIRO, e quando ele existe
         // vale `"Asaas"` — o nome do GATEWAY, não do método. Resultado: 3.256 NFs entraram com
         // forma `ASAAS` e caíram em "Indefinido" na aba, apagando a forma verdadeira que estava
@@ -995,10 +1038,10 @@ export async function fetchPedidosAbertos(
 
     const isBonif = temMarcadorBonificacao(det.marcadores);
 
-    const somaItens = itens.reduce((acc: number, i) => {
-      const item = ((i as Record<string, unknown>).item ?? i) as Record<string, unknown>;
-      return acc + (parseFloat(String(item.valor_unitario ?? 0)) * parseFloat(String(item.quantidade ?? 0)));
-    }, 0);
+    // Mesmo rateio das NFs (fecha ao centavo com o Tiny). ⚠️ Antes o desconto era rateado
+    // AQUI e o transform rateava de novo sobre o valor já rateado, então `valor_desconto`
+    // do pipeline saía uma fração do real (set/2026: R$ 5,5 mil gravados contra ~R$ 48 mil).
+    const rateio = ratearItensTiny(itens, valorDesc, valorFrete);
 
     for (let seq = 0; seq < itens.length; seq++) {
       const itemWrap = itens[seq] as Record<string, unknown>;
@@ -1006,9 +1049,7 @@ export async function fetchPedidosAbertos(
 
       const qtd      = parseFloat(String(item.quantidade   ?? 0)) || 0;
       const unitario = parseFloat(String(item.valor_unitario ?? 0)) || 0;
-      const bruto    = qtd * unitario;
-      const descItem = somaItens > 0 ? valorDesc  * (bruto / somaItens) : 0;
-      const totalItem = bruto - descItem;
+      const r        = rateio[seq];
 
       rows.push({
         marca:               cfg.marca,
@@ -1027,10 +1068,11 @@ export async function fetchPedidosAbertos(
         descricao_produto:   String(item.descricao ?? ""),
         quantidade:          qtd,
         valor_unitario:      unitario,
-        valor_total_item:    Math.round(totalItem * 100) / 100,
+        valor_total_item:    r.liquido,
         valor_nota:          valorTotal,
-        valor_desconto:      Math.round(descItem * 100) / 100,
-        valor_frete:         somaItens > 0 ? Math.round(valorFrete * (bruto / somaItens) * 100) / 100 : 0,
+        valor_desconto:      r.desconto,
+        valor_frete:         r.frete,
+        desconto_rateado:    true,
         // ⚠️ ORDEM INVERTIDA até 08/ago/2026: `meio_pagamento` vinha PRIMEIRO, e quando ele existe
         // vale `"Asaas"` — o nome do GATEWAY, não do método. Resultado: 3.256 NFs entraram com
         // forma `ASAAS` e caíram em "Indefinido" na aba, apagando a forma verdadeira que estava
