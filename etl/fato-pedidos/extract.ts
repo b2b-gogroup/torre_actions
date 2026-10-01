@@ -71,6 +71,15 @@ const CARDS = {
   // 6+ e o número não vale. Use EXPLAIN, que é imune à fila.
   protheusFat:     19609,  // ← 19605 (que é cópia do 18516) · db 47 Protheus
   protheusPedidos: 19610,  // ← 18661 · db 48 Middleware Hop (ecommerce.*), query idêntica
+  // ── Middleware Hop beauty_hub (db 55, schema `so`) — NOVOS, não são cópia de card antigo ──
+  // O db 48 (`ecommerce.*`) parou em 09/09/2026 e o middleware migrou para o db 55 (pedidos desde
+  // 10/09). Os dois cards abaixo têm o MESMO shape de 19610/19611 e são SOMADOS a eles: o db 48
+  // segue trazendo o histórico até 09/09 e o db 55 o que veio depois. Não há chave em comum
+  // (medido 01/10/2026: overlap 0). Item vem de `channel_payload->'itens'`.
+  // ⚠️ NÃO são críticos: se falharem o ETL segue com os cards antigos + suplementos Mercos
+  // (mercos-pipeline.ts / mercos-trat.ts), que só geram o que o card não trouxe.
+  hopPedidos:      19694,  // NOVO · db 55 · shape do 19610 (pipeline, item real)
+  hopTrat:         19695,  // NOVO · db 55 · shape do 19611 (1 linha por pedido)
   // Apice ES/RJ substituídos por API direta do Tiny (ver TINY_TOKEN_ES / TINY_TOKEN_RJ)
   tinyAPSP:        19612,  // ← 18481 · db 43 Data Mart (raw.*) — Apice SP, descontinuado
   tinyBBSP:        19613,  // ← 18520 · db 43 Data Mart (raw.*) — Barbours SP, descontinuado
@@ -125,6 +134,9 @@ export interface ExtractedData {
   protheusTrat: Record<string, unknown>[];
   protheusFat: Record<string, unknown>[];
   protheusPedidos: Record<string, unknown>[];
+  // Middleware Hop db 55 — mesclados em protheusPedidos/protheusTrat logo após a leitura
+  hopPedidos?: Record<string, unknown>[];
+  hopTrat?: Record<string, unknown>[];
   // Tiny vendas (ES/RJ via API Tiny; SP/BB via Metabase)
   tinyAPRJ: Record<string, unknown>[];
   tinyAPES: Record<string, unknown>[];
@@ -178,6 +190,8 @@ export async function extractAll(): Promise<ExtractedData> {
     { name: "protheusTrat", fn: () => fetchMetabaseCard(CARDS.protheusTrat) },
     { name: "protheusFat",  fn: () => fetchMetabaseCard(CARDS.protheusFat, paramsFat) },
     { name: "protheusPedidos", fn: () => fetchMetabaseCard(CARDS.protheusPedidos) },
+    { name: "hopPedidos", fn: () => fetchMetabaseCard(CARDS.hopPedidos) },
+    { name: "hopTrat", fn: () => fetchMetabaseCard(CARDS.hopTrat) },
     // 🧊 tinyAPSP / tinyBBSP / tinyAPSPPedidos CONGELADOS desde 29/set/2026.
     // O Data Mart (db 43) arquivou as tabelas das contas Tiny atacado SP — `raw.*` virou
     // `archive.raw__*`, schema em que o Metabase NÃO tem permissão — e os 3 cards passaram
@@ -246,6 +260,25 @@ export async function extractAll(): Promise<ExtractedData> {
       data[name] = [];
     }
   });
+
+  // ── Middleware Hop (db 55): soma ao que o db 48 trouxe ────────────────────
+  // Falha aqui NUNCA é fatal (ver nota em CARDS): tira o erro da lista de críticos e segue.
+  // Roda ANTES do corte de janela e dos suplementos Mercos, para que ambos já enxerguem as
+  // linhas do db 55 como "card trouxe" e só gerem o que realmente falta.
+  for (const [hop, destino] of [["hopPedidos", "protheusPedidos"], ["hopTrat", "protheusTrat"]] as const) {
+    const idx = errors.findIndex((e) => e.startsWith(hop));
+    if (idx >= 0) {
+      logger.warn(`Hop db 55 (${hop}) falhou — segue só com o db 48 + suplemento Mercos: ${errors[idx]}`);
+      errors.splice(idx, 1);
+      continue;
+    }
+    const linhasHop = (data[hop] ?? []) as Record<string, unknown>[];
+    if (linhasHop.length > 0) {
+      data[destino] = [...((data[destino] ?? []) as Record<string, unknown>[]), ...linhasHop];
+      logger.info(`Hop db 55: +${linhasHop.length} linhas em ${destino}`);
+    }
+    delete data[hop];
+  }
 
   // Corte em código das fontes Protheus SEM parâmetro de data no Metabase
   // (cards 19611/19610 — cópias de 18515/18661 —, database 48; não declaram template tags).
