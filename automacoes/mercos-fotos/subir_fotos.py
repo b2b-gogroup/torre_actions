@@ -9,7 +9,11 @@ Fonte: dim_produto_foto (Torre, sincronizada 1x/dia do card Metabase 28639 "Stg 
 Products" por etl-produto-fotos.yml -- até 04/set/2026 era a planilha "Produtos_Consolidado",
 ver histórico em etl/produto-fotos/index.ts), filtrada por DOIS lados antes de decidir o
 que enviar:
-  1. Só extensão que o Mercos aceita (JPG/JPEG/GIF/PNG) -- webp/vídeo ficam de fora.
+  1. Só extensão que o Pillow consegue abrir e converter (JPG/JPEG/GIF/PNG/WEBP/AVIF
+     -- 06/out/2026: achadas 6 fotos reais em dim_produto_foto só em .webp/.avif, que
+     o filtro antigo rejeitava ANTES de baixar mesmo com baixar_e_redimensionar já
+     convertendo qualquer formato que o Pillow abra, não só os 4 originais). Vídeo
+     continua de fora.
   2. Só SKU que a LISTA AO VIVO daquela empresa mostra SEM foto (pedido do usuário,
      28/ago/2026) -- varre a lista de produtos (não usa cache nosso) e olha o `src` da
      imagem principal de cada linha: se aponta pro placeholder `sem_imagem.jpg`, o
@@ -25,8 +29,7 @@ o filtro -- o robô rodava verde e enviava zero. Ver buscar_fotos_validas.
 
 Cada foto candidata é baixada, redimensionada pra no máximo 800x800 (recomendação
 do próprio Mercos) e reconvertida pra JPEG (achata transparência em fundo branco)
--- resolve tamanho (fotos da Shopify passam de 2MB) e formato (webp não é aceito)
-de uma vez só.
+-- resolve tamanho (fotos da Shopify passam de 2MB) e formato de uma vez só.
 
 Nome do arquivo segue o padrão EXATO que o Mercos exige pra associar automaticamente:
   ordem 1        -> {SKU}.jpg
@@ -113,6 +116,19 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 from supabase import create_client
 
+# Registra o decoder AVIF no Pillow (nao vem embutido no pacote base). Guardado em
+# try/except porque e so mais um formato a mais -- se o plugin faltar/quebrar num
+# ambiente, webp (nativo do Pillow 10+) continua funcionando sozinho; nao vale travar
+# o robo inteiro por causa de um plugin de formato que o Shopify raramente entrega de
+# verdade (testado 06/out/2026: as 6 URLs .webp/.avif reais vieram como JPEG/PNG na
+# pratica -- o Shopify so serve AVIF/WEBP de fato pra quem pede via header Accept, que
+# o requests.get() daqui nao manda -- mas o plugin fica de garantia pro dia em que vier).
+try:
+    import pillow_avif  # noqa: F401
+except Exception as _e:  # pragma: no cover
+    print(f"[mercos-fotos] aviso: plugin AVIF do Pillow nao carregou ({_e}) -- "
+          f".avif real falharia na conversao, .webp continua OK (suporte nativo)")
+
 MERCOS_EMAIL = os.environ["MERCOS_EMAIL"]
 MERCOS_SENHA = os.environ["MERCOS_SENHA"]
 GMAIL_USER = os.environ["GMAIL_USER"]
@@ -131,7 +147,7 @@ EMPRESA_ID_RJ = "424524"
 # e isso a varredura ao vivo (varrer_skus_sem_foto_mercos) já resolve por empresa_id.
 EMPRESAS = {"es": EMPRESA_ID_ES, "rj": EMPRESA_ID_RJ}
 
-EXT_IMAGEM_OK = (".png", ".jpg", ".jpeg", ".gif")
+EXT_IMAGEM_OK = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif")
 TAMANHO_MAX = 800
 BATCH = int(os.environ.get("MERCOS_FOTOS_BATCH", "30"))
 ESPERA_POR_ARQ_MS = int(os.environ.get("MERCOS_FOTOS_ESPERA_ARQ_MS", "2000"))
