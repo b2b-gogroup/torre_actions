@@ -22,6 +22,15 @@
  * (`{"id":63,"name":"Data Mart"}`), não é o mesmo id usado no outro Metabase (gobeaute) pra um
  * banco de mesmo nome — ids são por instância, nunca assumir que repetem entre Metabases.
  *
+ * ⚠️ **`/api/dataset` corta em 2.000 linhas, EM SILÊNCIO** (`/api/card/:id/query/json`, que a
+ * gente usava antes, não tinha esse teto — é exatamente o que a troca perdeu). A tabela tem
+ * **3.547 linhas** medidas via `count(*)`; sem paginar, cada run pegava uma fatia arbitrária de
+ * 2.000 (ordem física do Postgres, não garantida entre chamadas) — foi isso que fez a guarda de
+ * encolhimento disparar com números DIFERENTES em runs seguidos (838 numa vez, 543 noutra) sobre
+ * a MESMA fonte: nenhum catálogo encolheu, a página sorteada é que mudava. `buscarTodasLinhas()`
+ * pagina com `LIMIT 2000 OFFSET N` até a página vir menor que 2000 — confirmado ao vivo que
+ * `LIMIT 2000 OFFSET 0` + `LIMIT 2000 OFFSET 2000` somam exatos os 3.547.
+ *
  * O resultado é 1 linha por VARIANTE de produto (tem Product ID + Variant ID + Sku por linha),
  * não 1 linha por foto — diferente da planilha antiga, que já vinha com 1 linha por foto e a
  * ordem implícita na posição. Cada linha carrega até 2 fotos candidatas: `image_src` (imagem
@@ -54,6 +63,23 @@ import { nativeQuery, datasetRows } from "../shared/metabase-client.js";
 
 const DATABASE_DATA_MART = 63;
 const SQL_FOTOS = `SELECT * FROM "silver"."stg_shopify_products"`;
+/** Medido ao vivo em 09/out/2026 — ver aviso no cabeçalho do arquivo. */
+const PAGE_SIZE = 2000;
+
+/** Pagina `/api/dataset` com LIMIT/OFFSET até a página vir menor que PAGE_SIZE — é o jeito de
+ *  contornar o teto de 2.000 linhas sem depender do endpoint de download (`/api/dataset/json`
+ *  devolveu 400 com o mesmo payload, formato de upload é diferente; LIMIT/OFFSET é confirmado). */
+async function buscarTodasLinhas(sql: string): Promise<Record<string, unknown>[]> {
+  const todas: Record<string, unknown>[] = [];
+  let offset = 0;
+  while (true) {
+    const pagina = await datasetRows(nativeQuery(DATABASE_DATA_MART, `${sql} LIMIT ${PAGE_SIZE} OFFSET ${offset}`));
+    todas.push(...pagina);
+    if (pagina.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return todas;
+}
 
 /** Abaixo desta fracao do que JA esta gravado, a carga nova e tratada como fonte quebrada -- nao
  *  como queda real de catalogo. A guarda de baixo so pegava card VAZIO, e em 18/set/2026 uma carga
@@ -269,13 +295,14 @@ async function contarAtual(): Promise<number> {
 
 async function main() {
   const t0 = Date.now();
-  console.log(`[etl-produto-fotos] baixando silver.stg_shopify_products (Data Mart, SQL nativo)...`);
+  console.log(`[etl-produto-fotos] baixando silver.stg_shopify_products (Data Mart, SQL nativo, paginado)...`);
 
   const [rowsCard, catalogo, atual] = await Promise.all([
-    datasetRows(nativeQuery(DATABASE_DATA_MART, SQL_FOTOS)),
+    buscarTodasLinhas(SQL_FOTOS),
     carregarCatalogo(),
     contarAtual(),
   ]);
+  console.log(`[etl-produto-fotos] ${rowsCard.length} linhas brutas da origem`);
   if (SO_CONTEUDO) {
     await gravarConteudo(rowsCard, catalogo);
     console.log(`[etl-produto-fotos] OK (só conteúdo) em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
