@@ -247,6 +247,33 @@ async function bulkInsert(rows: FotoRow[]): Promise<void> {
   }
 }
 
+/** Reaplica foto curada à mão (dim_produto_foto_manual) DEPOIS do truncate+insert automático —
+ *  sem isso, qualquer SKU que o matching automático nunca resolve (achado real: DenaVita, Shopify
+ *  usa SKU/EAN diferente do nosso) teria a foto apagada todo dia e ninguém perceberia até
+ *  reclamarem de novo. Roda sempre, mesmo quando a lista está vazia (não é crítico — nunca deve
+ *  derrubar a carga automática por causa de um override manual). */
+async function reaplicarOverridesManuais(): Promise<void> {
+  const { data, error } = await supabase.from("dim_produto_foto_manual").select("sku, ordem, url");
+  if (error) {
+    console.warn(`[etl-produto-fotos] overrides manuais NÃO lidos: ${error.message}`);
+    return;
+  }
+  const overrides = (data ?? []) as { sku: string; ordem: number; url: string }[];
+  if (overrides.length === 0) return;
+  const agora = new Date().toISOString();
+  const { error: errIns } = await supabase
+    .from("dim_produto_foto")
+    .upsert(
+      overrides.map((o) => ({ ...o, atualizado_em: agora })),
+      { onConflict: "sku, url" },
+    );
+  if (errIns) {
+    console.warn(`[etl-produto-fotos] overrides manuais NÃO reaplicados: ${errIns.message}`);
+    return;
+  }
+  console.log(`[etl-produto-fotos] ${overrides.length} foto(s) manual(is) reaplicada(s) (dim_produto_foto_manual)`);
+}
+
 /** dim_produto_foto.sku tem FK pra dim_produto.sku — o card traz SKU de kit/combo que não é
  *  produto cadastrado na Torre (ex.: código de kit tipo "KBS00038") e SKU numérico que não
  *  existe na Torre de jeito nenhum (Ápice — ver cabeçalho). Sem filtrar, 1 SKU inválido
@@ -338,6 +365,7 @@ async function main() {
 
   await truncate();
   await bulkInsert(rows);
+  await reaplicarOverridesManuais();
   // Não crítico: fotos já gravadas; o texto falhar só deixa o da carga anterior.
   await gravarConteudo(rowsCard, catalogo).catch((e) => console.warn(`[etl-produto-fotos] conteúdo NÃO gravado: ${e instanceof Error ? e.message : e}`));
 
