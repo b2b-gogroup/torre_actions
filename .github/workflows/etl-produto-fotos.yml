@@ -1,0 +1,62 @@
+name: ETL produto-fotos (Shopify)
+
+# Replica o card do Metabase 28639 "Stg Shopify Products" (fotos de produto, sincronizadas do
+# Shopify) pra dim_produto_foto no Supabase. Até 04/set/2026 a fonte era a planilha manual
+# "Produtos_Consolidado" — trocada por decisão do usuário (planilha parou de ser atualizada,
+# o card do Metabase passou a ser a fonte da verdade). Full refresh (truncate + insert): o
+# card inteiro é a fonte da verdade, não há nada pra mesclar incrementalmente.
+#
+# Migrado de b2b-gogroup/torre_b2b pra cá em 09/out/2026 — conteúdo só mexe em SKU/foto de
+# produto (sem CNPJ, sem nome de cliente, sem credencial versionada), auditado contra os 9
+# invariantes de guard-invariantes.yml antes de entrar. etl/produto-fotos/ precisou ser
+# adicionado na allowlist do invariante #4 (não estava lá — só o ETL de fato_pedidos tinha
+# sido auditado até então).
+
+on:
+  schedule:
+    - cron: '0 9 * * *'   # 06h BRT (UTC-3)
+  workflow_dispatch:       # trigger manual via UI
+
+concurrency:
+  group: etl-produto-fotos
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    # Mesmo padrão dos outros workflows deste repo: variável PRÓPRIA (não RODIZIO_ATIVO,
+    # que é dos robôs do Mercos, nem ETL_FATO_PEDIDOS_ATIVO, que é de outro ETL) — ligar
+    # errado aqui teria significado ambíguo. workflow_dispatch continua livre sempre
+    # (rodada manual é decisão de uma pessoa). PRECISA ser setada manualmente
+    # (`gh variable set ETL_PRODUTO_FOTOS_ATIVO -b true -R b2b-gogroup/torre_actions`)
+    # antes do schedule disparar de verdade — nasce desligada de propósito.
+    if: github.event_name != 'schedule' || vars.ETL_PRODUTO_FOTOS_ATIVO == 'true'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: etl/package-lock.json
+
+      - name: Install ETL dependencies
+        working-directory: etl
+        run: npm ci
+
+      - name: Run ETL produto-fotos
+        working-directory: etl
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # metabase.gocase.com.br devolveu 401 com a METABASE_API_KEY existente (05/set/2026) —
+          # não é a mesma credencial de metabase.gobeaute.com.br, usada pelos outros ETLs deste
+          # repo. Secret PRÓPRIA aqui de propósito: reusar/sobrescrever METABASE_API_KEY
+          # arriscaria quebrar quem já funciona contra o gobeaute. PRECISA ser cadastrada aqui
+          # manualmente — não existia neste repo antes desta migração.
+          METABASE_URL: https://metabase.gocase.com.br
+          METABASE_API_KEY: ${{ secrets.METABASE_GOCASE_API_KEY }}
+        run: npx tsx produto-fotos/index.ts
