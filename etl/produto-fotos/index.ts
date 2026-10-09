@@ -260,18 +260,28 @@ async function reaplicarOverridesManuais(): Promise<void> {
   }
   const overrides = (data ?? []) as { sku: string; ordem: number; url: string }[];
   if (overrides.length === 0) return;
+
+  // Apaga TUDO que o matching automático (SKU/EAN) tenha gravado pra esses SKUs antes de
+  // recolocar o override — achado real (DenaVita, 09/out/2026): o EAN de DV01001 bate, mas de
+  // forma AMBÍGUA (7 produtos diferentes compartilham o mesmo código de barras no Shopify, kit
+  // e bundle inclusive), e o automático grava TODOS como candidatos. Sem apagar antes, o override
+  // só SOMA ao lado das fotos erradas em vez de substituí-las.
+  const skus = [...new Set(overrides.map((o) => o.sku))];
+  const { error: errDel } = await supabase.from("dim_produto_foto").delete().in("sku", skus);
+  if (errDel) {
+    console.warn(`[etl-produto-fotos] limpeza pré-override FALHOU: ${errDel.message}`);
+    return;
+  }
+
   const agora = new Date().toISOString();
   const { error: errIns } = await supabase
     .from("dim_produto_foto")
-    .upsert(
-      overrides.map((o) => ({ ...o, atualizado_em: agora })),
-      { onConflict: "sku, url" },
-    );
+    .insert(overrides.map((o) => ({ ...o, atualizado_em: agora })));
   if (errIns) {
     console.warn(`[etl-produto-fotos] overrides manuais NÃO reaplicados: ${errIns.message}`);
     return;
   }
-  console.log(`[etl-produto-fotos] ${overrides.length} foto(s) manual(is) reaplicada(s) (dim_produto_foto_manual)`);
+  console.log(`[etl-produto-fotos] ${overrides.length} foto(s) manual(is) reaplicada(s) em ${skus.length} SKU(s) (dim_produto_foto_manual) — automático substituído, não somado`);
 }
 
 /** dim_produto_foto.sku tem FK pra dim_produto.sku — o card traz SKU de kit/combo que não é
