@@ -3,29 +3,45 @@
  *
  * Até 04/set/2026 a fonte era a planilha Google "Produtos_Consolidado" (mantida à mão pelo
  * time de marketing) — ver histórico no HEAD anterior deste arquivo. A partir de 05/set/2026,
- * por decisão do usuário, a fonte É o card do Metabase **28639 "Stg Shopify Products"**
- * (https://metabase.gocase.com.br/question/28639-stg-shopify-products), que sincroniza direto
- * do Shopify — a planilha manual parou de ser atualizada.
+ * por decisão do usuário, a fonte passou a ser o card do Metabase 28639 "Stg Shopify Products"
+ * (https://metabase.gocase.com.br/question/28639-stg-shopify-products).
  *
- * O card é 1 linha por VARIANTE de produto (tem Product ID + Variant ID + Sku por linha), não
- * 1 linha por foto — diferente da planilha antiga, que já vinha com 1 linha por foto e a ordem
- * implícita na posição. Cada linha carrega até 2 fotos candidatas: `image_src` (imagem principal
- * do produto) e `variant_image_url` (imagem específica da variante, quando existe e é diferente
- * da principal) — as duas viram entradas em `dim_produto_foto`, ordem 1/2 nessa prioridade.
+ * ⚠️ **09/out/2026: trocado de "ler o CARD" pra "rodar o SQL dele direto no banco".** A chave de
+ * API gerada pelo portal interno de self-service (que cria chave por Metabase + grupo de acesso)
+ * só autoriza **SQL nativo nos bancos liberados pro grupo** — ela NUNCA tem permissão de
+ * coleção/card, por desenho do próprio portal ("a chave só serve pra rodar SQL nativo pela API").
+ * `GET /api/card/28639` com essa chave dá 403 mesmo só pra pegar metadado; `GET /api/collection`
+ * devolve `[]` (zero coleção visível, nem a raiz) — não é bug de permissão faltando, é o portal
+ * nunca concedendo esse eixo. `GET /api/database` nos mesmos bancos funciona normal. Então: em vez
+ * de pedir o card salvo, rodamos a MESMA query dele via `/api/dataset` (SQL nativo), que essa
+ * chave já pode fazer — peguei o SQL literal em "Exibir SQL" na UI do card (é um `SELECT *` puro
+ * da tabela, sem filtro/join nenhum) e copiei aqui, sem LIMIT (o card tinha um LIMIT de export da
+ * UI, 1048575, que não faz sentido pro ETL).
  *
- * ⚠️ **Ápice não tem SKU nenhum no card — achado 18/set/2026, na 1ª carga real via Metabase.**
+ * `DATABASE_DATA_MART` = 63 no Metabase gocase — confirmado via `GET /api/database` com a chave
+ * (`{"id":63,"name":"Data Mart"}`), não é o mesmo id usado no outro Metabase (gobeaute) pra um
+ * banco de mesmo nome — ids são por instância, nunca assumir que repetem entre Metabases.
+ *
+ * O resultado é 1 linha por VARIANTE de produto (tem Product ID + Variant ID + Sku por linha),
+ * não 1 linha por foto — diferente da planilha antiga, que já vinha com 1 linha por foto e a
+ * ordem implícita na posição. Cada linha carrega até 2 fotos candidatas: `image_src` (imagem
+ * principal do produto) e `variant_image_url` (imagem específica da variante, quando existe e é
+ * diferente da principal) — as duas viram entradas em `dim_produto_foto`, ordem 1/2 nessa
+ * prioridade.
+ *
+ * ⚠️ **Ápice não tem SKU nenhum nessa tabela — achado 18/set/2026, na 1ª carga real via Metabase.**
  * O catálogo Ápice inteiro no Shopify (754 linhas, `Brand: "apice"`) usa um SKU NUMÉRICO
  * próprio (ex. `20588`, `46210` — o código do Tiny/ERP da Ápice), sem nenhuma relação com o
- * `AP01xxx` que a Torre usa pra Ápice: **0 de 3.443 linhas do card têm SKU começando em "AP"**.
+ * `AP01xxx` que a Torre usa pra Ápice: **0 de 3.443 linhas têm SKU começando em "AP"**.
  * Não é bug de normalização — são dois sistemas de identificação diferentes pro mesmo produto
  * (mesmo problema já registrado do lado do ETL de pedidos, em `etl/dev/fuzzy-match-skus.ts`).
- * Fallback: quando o SKU do card não bate com `dim_produto`, tenta pelo **código de barras**
+ * Fallback: quando o SKU não bate com `dim_produto`, tenta pelo **código de barras**
  * (`barcode`/EAN) contra `dim_produto.ean` — match EXATO, não fuzzy (foto errada é pior que
  * sem foto). Medido: 108 de 129 produtos Ápice ativos têm EAN cadastrado e batem exato com o
  * card. EAN duplicado entre 2+ SKUs em `dim_produto` NUNCA vira fallback (ambíguo — não dá pra
  * saber qual dos dois é o dono da foto).
  *
- * Full refresh diário (truncate + insert) — o card inteiro é a fonte da verdade, não há nada pra
+ * Full refresh diário (truncate + insert) — a tabela inteira é a fonte da verdade, não há nada pra
  * mesclar incrementalmente. Roda via GitHub Actions (.github/workflows/etl-produto-fotos.yml).
  *
  * Uso local:
@@ -34,9 +50,10 @@
  *     SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npx tsx produto-fotos/index.ts
  */
 import { createClient } from "@supabase/supabase-js";
-import { fetchMetabaseCard } from "../shared/metabase-client.js";
+import { nativeQuery, datasetRows } from "../shared/metabase-client.js";
 
-const CARD_FOTOS = 28639;
+const DATABASE_DATA_MART = 63;
+const SQL_FOTOS = `SELECT * FROM "silver"."stg_shopify_products"`;
 
 /** Abaixo desta fracao do que JA esta gravado, a carga nova e tratada como fonte quebrada -- nao
  *  como queda real de catalogo. A guarda de baixo so pegava card VAZIO, e em 18/set/2026 uma carga
@@ -252,9 +269,13 @@ async function contarAtual(): Promise<number> {
 
 async function main() {
   const t0 = Date.now();
-  console.log(`[etl-produto-fotos] baixando card Metabase ${CARD_FOTOS}...`);
+  console.log(`[etl-produto-fotos] baixando silver.stg_shopify_products (Data Mart, SQL nativo)...`);
 
-  const [rowsCard, catalogo, atual] = await Promise.all([fetchMetabaseCard(CARD_FOTOS), carregarCatalogo(), contarAtual()]);
+  const [rowsCard, catalogo, atual] = await Promise.all([
+    datasetRows(nativeQuery(DATABASE_DATA_MART, SQL_FOTOS)),
+    carregarCatalogo(),
+    contarAtual(),
+  ]);
   if (SO_CONTEUDO) {
     await gravarConteudo(rowsCard, catalogo);
     console.log(`[etl-produto-fotos] OK (só conteúdo) em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
@@ -264,7 +285,7 @@ async function main() {
 
   if (rows.length === 0) {
     // Card vazio/inacessível não pode apagar o que já existe — aborta sem truncar.
-    throw new Error(`0 linhas válidas extraídas do card ${CARD_FOTOS} — abortando sem tocar em dim_produto_foto (guarda contra card vazio/fora do ar apagar os dados).`);
+    throw new Error(`0 linhas válidas extraídas de silver.stg_shopify_products — abortando sem tocar em dim_produto_foto (guarda contra fonte vazia/fora do ar apagar os dados).`);
   }
 
   if (semMatch.length > 0) {
