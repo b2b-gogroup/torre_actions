@@ -440,6 +440,16 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
     // proximo caso destes seja localizavel no log em vez de exigir arqueologia em
     // pg_stat_activity — que, medido, NAO mostra a sessao do ETL neste cluster.
     const LOG_CADA_N = 10;
+    // ⚠️ INCIDENTE 13/out/2026 (intraday #396): o Postgres reiniciou às 21:21 UTC no meio do
+    // laço. As 2 conexões do pool morreram do lado do servidor, mas `client.release()` SEM erro
+    // as devolvia ao pool como boas — todo batch seguinte pegava um socket morto e esperava os
+    // 150 s do `query_timeout` ("Query read timeout"), 2 tentativas por batch: 1 h de falhas com
+    // o banco já de pé. Dois consertos:
+    //   1. `release(err)` em qualquer erro DESTRÓI a conexão; a próxima tentativa abre uma nova.
+    //   2. Disjuntor: N batches seguidos falhando = algo estrutural; aborta em vez de gastar
+    //      5 min por batch até o fim. O UPSERT é idempotente — rodar de novo completa a carga.
+    const MAX_FALHAS_SEGUIDAS = 3;
+    let falhasSeguidas = 0;
     const t0Batches = Date.now();
     let msNoBanco = 0;
 
@@ -452,19 +462,31 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
         await withRetry(
           async () => {
             const client = await pool.connect();
+            let erro: Error | undefined;
             try {
               await client.query(UPSERT_SQL, [JSON.stringify(batch)]);
+            } catch (e) {
+              erro = e instanceof Error ? e : new Error(String(e));
+              throw e;
             } finally {
-              client.release();
+              client.release(erro);
             }
           },
           { maxAttempts: 2, baseDelayMs: 3000, label: batchLabel }
         );
         msNoBanco += Date.now() - t0;
+        falhasSeguidas = 0;
       } catch (err) {
         batchesFailed++;
+        falhasSeguidas++;
         const msg = err instanceof Error ? err.message : String(err);
         logger.error(`${batchLabel}: falhou definitivamente`, { error: msg });
+        if (falhasSeguidas >= MAX_FALHAS_SEGUIDAS) {
+          throw new Error(
+            `Carga abortada: ${falhasSeguidas} batches seguidos falharam (último: ${msg}). ` +
+            `${i + 1 - batchesFailed}/${batches.length} gravados. O UPSERT é idempotente — rodar de novo completa.`
+          );
+        }
       }
 
       const ultimo = i === batches.length - 1;
