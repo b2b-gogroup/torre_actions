@@ -19,10 +19,10 @@ import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 import { baixarXlsxDoDrive } from "../shared/drive-download.js";
 
-// Arquivo Drive (mesmo ID sempre — o conteúdo é substituído diariamente).
-// Trocado em 31/ago/2026: o ID anterior (1kozPTQ...) ficou parado desde 04/ago
-// (a operação passou a subir num arquivo novo sem avisar o ETL).
-const DRIVE_FILE_ID = "1_BvnlZY9MM5ZulRcevnkyZLk3NtFY7Rh";
+// Arquivo Drive. Trocado em 20/out/2026 (pedido do usuário): o anterior
+// (1_BvnlZY…) parou com emissão em 30/09 e a operação passou a alimentar este.
+// Histórico de trocas: 31/ago (1kozPTQ… → 1_BvnlZY…) e 22/set.
+const DRIVE_FILE_ID = "1n452_oVtpprhVEieClgDHkjqSSFvsIkP";
 const SHEET_NAME = "Base";
 
 // Cliente Supabase criado sob demanda (só no main) — permite importar as funções
@@ -128,7 +128,9 @@ const CAMPOS: Record<string, (h: string) => boolean> = {
   status_geral:       exato("statusgeral"),
   status_nota:        exato("statusnota"),
   lead_time:          exato("leadtime"),
-  previsao_entrega:   exato("prazodeentrega"),
+  // 20/out/2026: o arquivo novo renomeou "PRAZO DE ENTREGA" → "Previsão de
+  // entrega" (mesma posição, mesmos dados). Aceita os dois.
+  previsao_entrega:   (h) => h === "prazodeentrega" || h === "previsaodeentrega",
   aging:              contem("aging"),
   performance_prazo:  exato("performanceprazo"),
   data_expedicao:     exato("datadeexpedicao"),

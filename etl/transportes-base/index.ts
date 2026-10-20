@@ -28,10 +28,10 @@ import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 import { baixarXlsxDoDrive } from "../shared/drive-download.js";
 
-// Arquivo Drive (mesmo ID sempre — o conteúdo é substituído pela operação).
-// Trocado em 31/ago/2026: o Google Sheets anterior (1XImT5e...) ficou parado
-// desde 03/ago (a operação migrou pra Excel no Drive sem avisar o ETL).
-const DRIVE_FILE_ID = "1bTEokl2Mi5w5cGoGMvtpJQlwZDP_Ty2c";
+// Arquivo Drive. Trocado em 20/out/2026 (pedido do usuário): o anterior
+// (1bTEokl2…) parou com emissão em 30/09 e a operação passou a alimentar este.
+// Histórico de trocas: 31/ago (Sheets 1XImT5e… → Excel) e 22/set.
+const DRIVE_FILE_ID = "1elFhJV64dUIJbVAKFP6jUR1Bl9b9CSpU";
 const SHEET_NAME = "BASE";
 
 function getSupabase() {
@@ -125,7 +125,11 @@ const CAMPOS: Record<string, (h: string) => boolean> = {
   status_expedicao:   exato("statusexpedicao"),
   status_nf:          exato("statusnf"),
   status_geral:       exato("statusgeral"),
-  previsao_entrega:   exato("prazodeentrega"),
+  // 20/out/2026: no arquivo novo o TÍTULO desta coluna foi apagado (o header
+  // virou " ") — os dados continuam lá (522 de 620 NFs de outubro com data).
+  // Aceita os dois nomes que já existiram; sem nome, mapearColunas cai na
+  // coluna SEM título que fica entre "DATA AGENDAMENTO" e "DATA ENTREGA".
+  previsao_entrega:   (h) => h === "prazodeentrega" || h === "previsaodeentrega",
   data_entrega:       exato("dataentrega"),
   data_devolucao:     exato("datadevolucao"),
   data_extravio:      exato("dataextravio"),
@@ -142,6 +146,21 @@ function mapearColunas(header: unknown[]): Record<string, number> {
   for (const [campo, pred] of Object.entries(CAMPOS)) {
     const i = hn.findIndex((h) => h !== "" && pred(h));
     if (i >= 0) idx[campo] = i;
+  }
+  // Previsão sem título (20/out/2026): a coluna que existe ENTRE as duas vizinhas
+  // de sempre e cujo header está vazio. Só aceita se for exatamente uma — mais
+  // de uma em branco no intervalo seria chute, e aí o erro de coluna essencial
+  // (que aborta antes de truncar) é o desfecho certo.
+  if (idx.previsao_entrega == null) {
+    const ini = hn.indexOf("dataagendamento");
+    const fim = idx.data_entrega;
+    if (ini >= 0 && fim != null && fim > ini) {
+      const vazias = hn.map((h, i) => [h, i] as const).filter(([h, i]) => i > ini && i < fim && h === "");
+      if (vazias.length === 1) {
+        idx.previsao_entrega = vazias[0][1];
+        console.warn(`[etl-transportes-base] coluna de previsão SEM título — usando a posição ${vazias[0][1]} (entre DATA AGENDAMENTO e DATA ENTREGA)`);
+      }
+    }
   }
   return idx;
 }
