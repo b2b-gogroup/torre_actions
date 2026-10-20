@@ -4,6 +4,7 @@ import { extractAll } from "./extract.js";
 import { transformAll } from "./transform.js";
 import { loadBatches } from "./load.js";
 import { flushEmailsClienteTiny, flushReprovadosTiny, flushUplacesTiny } from "./extract-tiny-apice.js";
+import { cadastrarClientesNovos } from "./cliente-novo.js";
 
 const WORKFLOW_NAME = "etl_fato_pedidos";
 
@@ -34,6 +35,12 @@ async function main() {
     // fn_aplica_pedido_reprovado() lê esta tabela. Falhar aqui só atrasa a regra.
     try { await flushReprovadosTiny(); }
     catch (e) { logger.warn(`flushReprovadosTiny falhou (não-crítico): ${e}`); }
+
+    // Cliente novo (ainda fora de dim_cliente) é cadastrado com o que a origem traz, em vez de
+    // virar o CNPJ placeholder ("Cliente não identificado"). Antes do transform, que monta o
+    // clienteSet a partir de sources.dimCliente. Falhar aqui volta ao placeholder.
+    try { await cadastrarClientesNovos(sources); }
+    catch (e) { logger.warn(`cadastrarClientesNovos falhou (não-crítico): ${e}`); }
 
     const allItems = await transformAll(sources);
 

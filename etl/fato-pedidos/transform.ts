@@ -7,6 +7,7 @@ import {
 } from "../shared/normalize.js";
 import { logger } from "../shared/logger.js";
 import { loadPedidosCancelados } from "../shared/pedidos-cancelados.js";
+import { CNPJS_GRUPO } from "./cnpjs-grupo.js";
 import type { ExtractedData } from "./extract.js";
 import {
   PLACEHOLDER_UUID,
@@ -21,19 +22,7 @@ import {
 } from "./maps.js";
 
 // Tipo de saída normalizada para carga no banco
-/**
- * CNPJs de empresas DO PRÓPRIO GRUPO — venda para elas é transferência, não receita.
- *
- * ⚠️ Duplica a intenção de `CNPJS_INTERNOS` em `extract-tiny-apice.ts`, mas com alcance
- * diferente: lá o corte é na extração do Tiny (evita buscar detalhe caro de NF), aqui é na
- * convergência, onde Protheus TAMBÉM passa. As duas listas precisam andar juntas — se um CNPJ
- * do grupo entrar em uma e não na outra, ele volta pelo ERP que ficou de fora.
- */
-const CNPJS_GRUPO = new Set([
-  // MAGA COMERCIO (unidades 40001/40002/40005/40004 do grupo no WebGex)
-  "38246589000185", "38246589000266", "38246589000347", "38246589000428",
-  "58323315000150",                                   // RITU PARTNERS (40003)
-]);
+// CNPJs do grupo (intercompany): lista única em ./cnpjs-grupo.ts (importada no topo)
 
 export interface FatoPedidoRow {
   pedido_id: string;

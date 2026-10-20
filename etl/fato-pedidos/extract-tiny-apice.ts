@@ -15,6 +15,7 @@ import {
   tinyObterPedido,
   tinyProcessarConcorrente,
 } from "../shared/tiny-api-client.js";
+import { CNPJS_GRUPO } from "./cnpjs-grupo.js";
 import { getSupabaseAdmin } from "../shared/supabase-admin.js";
 
 const CONCURRENCY = 2; // calls paralelas de detalhe — 2x1s = ~2 calls/sec, seguro para Tiny
@@ -91,32 +92,8 @@ const SIT_PED_MAP: Record<string, string> = {
   "Pronto para envio": "Aguardando Faturamento",
 };
 
-/**
- * CNPJs de empresas internas — excluir dos pedidos.
- *
- * ⚠️ MAGA e RITU PARTNERS entraram em 18/ago/2026. A MAGA aparecia no ranking de clientes do
- * Gerencial (R$ 94k, 48,5% de share no recorte que o usuário viu; R$ 357.398,58 em 3 NFs no ano)
- * como se fosse venda — é TRANSFERÊNCIA INTERNA. Confirmado por dois lados: o CNPJ
- * 38.246.589/0002-66 é a **unidade 40002** do próprio grupo no WebGex, e a pessoa atribuída como
- * "vendedora" é de OPERAÇÕES, cuidando do trâmite interno (informação do usuário).
- *
- * Os quatro CNPJs da MAGA e o da RITU entram juntos: hoje só o 0002-66 fatura, mas corrigir um e
- * deixar os irmãos de fora é garantir que o problema volte pela filial seguinte.
- *
- * ⚠️ Isto só vale para cargas FUTURAS — o histórico sai pelo ledger
- * `fato_pedidos_cancelamento_manual`, senão as linhas já gravadas continuam no faturamento.
- */
-const CNPJS_INTERNOS = new Set([
-  "48290289000157","48290289000319","48290289000238",
-  "54137817000216","54137817000305","54137817000488",
-  "57344563000114","57344563000203","26301600000183",
-  "54190174000355","46803642000120","58181480000114",
-  "60453002000249","60453002000168","60453002000320",
-  "26301600000264","26301600000345",
-  // MAGA COMERCIO (unidades 40001/40002/40005/40004 do grupo) + RITU PARTNERS (40003)
-  "38246589000185","38246589000266","38246589000347","38246589000428",
-  "58323315000150",
-]);
+// CNPJs do grupo (intercompany): lista única em ./cnpjs-grupo.ts
+const CNPJS_INTERNOS = CNPJS_GRUPO;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
