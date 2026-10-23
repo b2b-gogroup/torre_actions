@@ -130,7 +130,10 @@ const CAMPOS: Record<string, (h: string) => boolean> = {
   // Aceita os dois nomes que já existiram; sem nome, mapearColunas cai na
   // coluna SEM título que fica entre "DATA AGENDAMENTO" e "DATA ENTREGA".
   previsao_entrega:   (h) => h === "prazodeentrega" || h === "previsaodeentrega",
-  data_entrega:       exato("dataentrega"),
+  // 23/out/2026: o arquivo passou a chamar a coluna "Data de Entrega" (antes "DATA ENTREGA") e o
+  // exato() deixou de casar -- data_entrega ficou NULL em 8.578 de 8.578 linhas, com status_geral
+  // "Entregue" em 7.867, e a Jornada não via entrega nenhuma do Beauty Hub. Aceita os dois nomes.
+  data_entrega:       (h) => h === "dataentrega" || h === "datadeentrega",
   data_devolucao:     exato("datadevolucao"),
   data_extravio:      exato("dataextravio"),
   // 22/set/2026: o arquivo novo chama a coluna "Detalhes Site Transportador
