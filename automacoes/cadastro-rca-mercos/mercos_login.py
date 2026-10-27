@@ -44,6 +44,7 @@ no repo torre_de_performance_b2b):
 import email as email_lib
 import imaplib
 import re
+import os
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -338,6 +339,13 @@ def garantir_empresa(page: Page, empresa_id: str) -> None:
     # passou calado em 21/set enquanto a sessao nem existia ainda.
     if f"/{empresa_id}/" in page.url and "/login" not in page.url:
         return
+    if "ativar-autenticacao-por-dois-fatores" in page.url:
+        # Nao e empresa errada: o seletor do topo nunca vai trocar daqui. Ver login_mercos.
+        raise RuntimeError(
+            "O Mercos exige ativar a verificacao em duas etapas nesta conta antes de "
+            "qualquer tela (URL /ativar-autenticacao-por-dois-fatores/). Ativar pelo "
+            "metodo E-MAIL. Ver docs/processos/mercos-2fa-senha-de-app.md."
+        )
 
     sigla = EMPRESAS_MERCOS.get(empresa_id)
     if not sigla:
@@ -369,10 +377,44 @@ def garantir_empresa(page: Page, empresa_id: str) -> None:
     )
 
 
+LOGIN_TENTATIVAS = int(os.environ.get("MERCOS_LOGIN_TENTATIVAS") or 3)
+LOGIN_ESPERA_S = int(os.environ.get("MERCOS_LOGIN_ESPERA_S") or 30)
+
+
 def login_mercos(page: Page, empresa_id: str, mercos_email: str, mercos_senha: str,
                   gmail_user: str, gmail_senha: str) -> None:
     """Loga no Mercos e resolve 2FA se pedido. Levanta RuntimeError se nao
-    conseguir confirmar chegada no dashboard."""
+    conseguir confirmar chegada no dashboard.
+
+    🔴 27/out/2026: o login as vezes le um codigo NOVO e valido, digita, e a sessao nao
+    assenta em 30s ("O login nao assentou") -- visto no robo de credito sem nenhum outro
+    robo na conta, e nos locais. Na 2a tentativa (codigo novo) sempre entrou. Antes disso
+    a rodada inteira morria na 1a falha. Agora tenta de novo ate LOGIN_TENTATIVAS vezes,
+    com LOGIN_ESPERA_S entre elas e um codigo novo a cada vez.
+    ⚠️ So repete "nao assentou" / empresa que nao trocou. Credencial do Gmail recusada,
+    caixa errada e "Mercos nao mandou codigo" NAO melhoram tentando -- sobem na hora.
+    """
+    ultimo = None
+    for tentativa in range(1, LOGIN_TENTATIVAS + 1):
+        if tentativa > 1:
+            print(f"  [login] tentativa {tentativa}/{LOGIN_TENTATIVAS} em {LOGIN_ESPERA_S}s "
+                  f"(a anterior: {str(ultimo)[:120]})")
+            time.sleep(LOGIN_ESPERA_S)
+        try:
+            _login_mercos_uma_vez(page, empresa_id, mercos_email, mercos_senha, gmail_user, gmail_senha)
+            return
+        except (CredencialGmailInvalida, CaixaNaoRecebe2FA):
+            raise
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "nao assentou" not in msg and "nao trocou" not in msg and "INDICADORES" not in msg:
+                raise
+            ultimo = exc
+    raise ultimo if ultimo else RuntimeError("login no Mercos falhou")
+
+
+def _login_mercos_uma_vez(page: Page, empresa_id: str, mercos_email: str, mercos_senha: str,
+                          gmail_user: str, gmail_senha: str) -> None:
     login_url = f"https://app.mercos.com/login?next=/{empresa_id}/guia_inicial/"
     page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
     page.fill('[name="usuario"]', mercos_email)
@@ -452,6 +494,23 @@ def login_mercos(page: Page, empresa_id: str, mercos_email: str, mercos_senha: s
             f"{page.url}. Isto NAO e 'sessao caiu no meio da rodada' -- ela "
             "nunca chegou a existir. Conferir credencial/2FA antes de olhar "
             "as telas seguintes."
+        )
+
+    # 🔴 27/out/2026: o Mercos passou a OBRIGAR a conta a ativar a verificacao
+    # em duas etapas. Enquanto nao ativa, todo goto devolve a tela
+    # "/ativar-autenticacao-por-dois-fatores/" -- e o garantir_empresa abaixo lia
+    # isso como "sessao abriu em outra empresa" e mandava procurar o problema no
+    # lugar errado (9 rodadas do credito morreram assim em 27/out). Ativar e uma
+    # decisao sobre a seguranca da CONTA, feita uma vez por uma pessoa (metodo
+    # E-MAIL, que o robo ja le; app autenticador pararia todos os robos) --
+    # nunca pelo robo. Runbook: docs/processos/mercos-2fa-senha-de-app.md.
+    if "ativar-autenticacao-por-dois-fatores" in page.url:
+        raise RuntimeError(
+            f"O Mercos exige que a conta {mercos_email} ATIVE a verificacao em duas "
+            "etapas antes de qualquer tela (URL /ativar-autenticacao-por-dois-fatores/). "
+            "Nao e sessao caida nem empresa errada. Uma pessoa precisa entrar no Mercos "
+            "com essa conta e ativar pelo metodo E-MAIL (o robo ja le o codigo no e-mail). "
+            "Ver docs/processos/mercos-2fa-senha-de-app.md."
         )
 
     # ⚠️ `INDICADORES` NAO prova que estamos na empresa certa: e o painel de
