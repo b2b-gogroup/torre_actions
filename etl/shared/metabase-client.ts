@@ -3,6 +3,15 @@ import { withRetry } from "./retry.js";
 
 const METABASE_URL = process.env.METABASE_URL || "https://metabase.gobeaute.com.br";
 
+/**
+ * Retry das chamadas ao Metabase: 6 tentativas, esperas 3 s, 6 s, 12 s, 24 s, 30 s
+ * (~75 s de janela). Era 3 tentativas / 2 s + 4 s (~6 s), curto demais para a
+ * conexão Metabase → Protheus (db 47), que pisca por 15-30 s: em 28/out/2026 três
+ * runs seguidos do ETL abortaram com "The connection attempt failed." no card
+ * 19609 (fonte crítica) enquanto a mesma consulta voltava sozinha segundos depois.
+ */
+const RETRY_METABASE = { maxAttempts: 6, baseDelayMs: 3000, maxDelayMs: 30000 };
+
 function getApiKey(): string {
   const key = process.env.METABASE_API_KEY;
   if (!key) {
@@ -68,7 +77,7 @@ export async function fetchMetabaseCard(
       logger.info(`Metabase card ${cardId}: ${data.length} registros${filtro}`);
       return data;
     },
-    { maxAttempts: 3, baseDelayMs: 2000, label: `Metabase card ${cardId}` }
+    { ...RETRY_METABASE, label: `Metabase card ${cardId}` }
   );
 }
 
@@ -94,7 +103,7 @@ export async function datasetRows(payload: Record<string, unknown>): Promise<Rec
       if (!res.ok) throw new Error(`Metabase dataset: HTTP ${res.status} ${await res.text().catch(() => "")}`.trim());
       return res.json() as Promise<MetabaseDataset>;
     },
-    { maxAttempts: 3, baseDelayMs: 2000, label: "Metabase dataset" },
+    { ...RETRY_METABASE, label: "Metabase dataset" },
   );
   const cols = json.data?.cols?.map((c) => c.name) ?? [];
   const rows = json.data?.rows ?? [];
