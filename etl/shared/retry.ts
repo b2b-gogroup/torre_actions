@@ -3,6 +3,8 @@ import { logger } from "./logger.js";
 interface RetryOptions {
   maxAttempts?: number;
   baseDelayMs?: number;
+  /** Teto da espera entre tentativas (sem teto quando omitido). */
+  maxDelayMs?: number;
   label?: string;
 }
 
@@ -11,7 +13,7 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   opts: RetryOptions = {}
 ): Promise<T> {
-  const { maxAttempts = 3, baseDelayMs = 2000, label = "operation" } = opts;
+  const { maxAttempts = 3, baseDelayMs = 2000, maxDelayMs = Infinity, label = "operation" } = opts;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -25,7 +27,7 @@ export async function withRetry<T>(
         throw err;
       }
 
-      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      const delay = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
       logger.warn(`${label}: tentativa ${attempt}/${maxAttempts} falhou, retry em ${delay}ms`, {
         error: msg,
       });
