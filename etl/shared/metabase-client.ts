@@ -33,11 +33,24 @@ export async function fetchMetabaseCard(
   cardId: number,
   params?: Record<string, string>
 ): Promise<Record<string, unknown>[]> {
-  const parameters = Object.entries(params ?? {}).map(([slug, value]) => ({
-    type: "string/=",
-    value: [value],
-    target: ["variable", ["template-tag", slug]],
-  }));
+  // Metabase v0.64 (atualizado em 28/out/2026) passou a exigir `id` em cada parâmetro
+  // (sem ele: 400 "Schema for a string that cannot be blank"). E o `id` tem de ser o
+  // da TEMPLATE TAG do card: com um id qualquer o Metabase responde 200 e IGNORA o
+  // filtro em silêncio (medido no card 19609: 72.889 linhas sem filtro × 24.192 com).
+  // Por isso o id é lido do próprio card, e tag que não existe aborta em vez de seguir.
+  const ids = params && Object.keys(params).length ? await idsDasTags(cardId) : {};
+  const parameters = Object.entries(params ?? {}).map(([slug, value]) => {
+    const id = ids[slug];
+    if (!id) {
+      throw new Error(`Metabase card ${cardId}: template tag "${slug}" não existe no card`);
+    }
+    return {
+      id,
+      type: "string/=",
+      value: [value],
+      target: ["variable", ["template-tag", slug]],
+    };
+  });
 
   return withRetry(
     async () => {
@@ -78,6 +91,44 @@ export async function fetchMetabaseCard(
       return data;
     },
     { ...RETRY_METABASE, label: `Metabase card ${cardId}` }
+  );
+}
+
+/**
+ * Nome → id das template tags de um card. Aceita os dois formatos do Metabase:
+ * o antigo (`dataset_query.native["template-tags"]`, objeto por nome) e o v0.64
+ * (`dataset_query.stages[].["template-tags"]`, lista com `name`).
+ */
+async function idsDasTags(cardId: number): Promise<Record<string, string>> {
+  return withRetry(
+    async () => {
+      const res = await fetch(`${METABASE_URL}/api/card/${cardId}`, {
+        headers: { "x-api-key": getApiKey() },
+      });
+      if (!res.ok) {
+        throw new Error(`Metabase card ${cardId} (metadados): ${res.status} ${res.statusText}`);
+      }
+      const card = (await res.json()) as { dataset_query?: Record<string, unknown> };
+      const dq = (card.dataset_query ?? {}) as Record<string, unknown>;
+      const out: Record<string, string> = {};
+      const coleta = (tags: unknown) => {
+        if (Array.isArray(tags)) {
+          for (const t of tags as { name?: string; id?: string }[]) {
+            if (t?.name && t?.id) out[t.name] = t.id;
+          }
+        } else if (tags && typeof tags === "object") {
+          for (const [nome, t] of Object.entries(tags as Record<string, { id?: string }>)) {
+            if (t?.id) out[nome] = t.id;
+          }
+        }
+      };
+      coleta((dq.native as Record<string, unknown> | undefined)?.["template-tags"]);
+      for (const st of (dq.stages as Record<string, unknown>[] | undefined) ?? []) {
+        coleta(st?.["template-tags"]);
+      }
+      return out;
+    },
+    { ...RETRY_METABASE, label: `Metabase card ${cardId} (metadados)` }
   );
 }
 
