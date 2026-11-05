@@ -51,7 +51,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterator
 
 API = "https://api.tiny.com.br/api2"
@@ -153,13 +153,81 @@ def extrai_nf(conta: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _distintas(contas: list[dict]) -> int:
+    return len({str(c["id"]) for c in contas})
+
+
 def varre_mes(tk: str, mes: date) -> tuple[list[dict], int, bool]:
-    """Devolve (contas, paginas, completa). `completa=False` invalida a dedução de baixa."""
+    """Devolve (contas sem repetição, paginas, completa). `completa=False` invalida a dedução de baixa.
+
+    ⚠️ A ordenação da API do Tiny NÃO é estável entre páginas: contas com a mesma data trocam de
+    lugar de uma página para a outra, então uma conta aparece duas vezes e OUTRA nunca aparece.
+    Medido em 05/nov/2026: tiny_rj out/2026 trazia 527 linhas para 508 contas distintas — 19
+    repetidas = 19 puladas — e o upsert do lote caía com "ON CONFLICT DO UPDATE command cannot
+    affect row a second time" (11 runs seguidos em falha, de 31/out a 05/nov).
+    Saída: janela menor. O mês é relido dia a dia e, no dia que ainda repete (30/10 tinha 267
+    contas em 3 páginas), o dia é fatiado por VENCIMENTO até cada fatia caber sem repetir.
+    """
+    contas, pags, completa = varre_periodo(tk, mes, fim_do_mes(mes))
+    if _distintas(contas) == len(contas):
+        return contas, pags, completa
+
+    print(f"    ↳ {mes:%Y-%m}: contas repetidas entre páginas — relendo dia a dia", file=sys.stderr)
+    todas: dict[str, dict] = {}
+    pags, completa = 0, True
+    dia = mes
+    while dia <= fim_do_mes(mes):
+        c, p, ok = varre_dia(tk, dia)
+        for x in c:
+            todas[str(x["id"])] = x
+        pags += p
+        completa = completa and ok
+        dia += timedelta(days=1)
+        time.sleep(1.2)                                     # a API limita por minuto
+    return list(todas.values()), pags, completa
+
+
+def varre_dia(tk: str, dia: date) -> tuple[list[dict], int, bool]:
+    c, p, ok = varre_periodo(tk, dia, dia)
+    if _distintas(c) == len(c):
+        return c, p, ok
+    # Fatiar por vencimento. A faixa larga cobre qualquer prazo real; a conferência abaixo pega
+    # o que ficar fora dela (conta lida na leitura simples e ausente das fatias = incompleto).
+    fatias, pf, okf = varre_venc(tk, dia, dia - timedelta(days=400), dia + timedelta(days=800))
+    ids_fatias = {str(x["id"]) for x in fatias}
+    faltou = {str(x["id"]) for x in c} - ids_fatias
+    if faltou:
+        print(f"      ⚠️ {dia:%d/%m}: {len(faltou)} conta(s) fora das fatias de vencimento", file=sys.stderr)
+    todas = {str(x["id"]): x for x in c}
+    todas.update({str(x["id"]): x for x in fatias})
+    return list(todas.values()), p + pf, ok and okf and not faltou
+
+
+def varre_venc(tk: str, dia: date, vi: date, vf: date) -> tuple[list[dict], int, bool]:
+    c, p, ok = varre_periodo(tk, dia, dia, vi, vf)
+    if _distintas(c) == len(c):
+        return c, p, ok
+    if vi >= vf:
+        print(f"      ⚠️ {dia:%d/%m}: ainda repete com vencimento {vi:%d/%m/%Y} — incompleto", file=sys.stderr)
+        return c, p, False
+    meio = vi + timedelta(days=(vf - vi).days // 2)
+    time.sleep(1.2)
+    a, pa, oka = varre_venc(tk, dia, vi, meio)
+    time.sleep(1.2)
+    b, pb, okb = varre_venc(tk, dia, meio + timedelta(days=1), vf)
+    return a + b, p + pa + pb, ok and oka and okb
+
+
+def varre_periodo(tk: str, ini: date, fim: date,
+                  venc_ini: date | None = None, venc_fim: date | None = None) -> tuple[list[dict], int, bool]:
+    """Leitura paginada crua (pode trazer repetidas — quem decide é o chamador)."""
+    filtros: dict[str, str] = {"data_ini_emissao": br(ini), "data_fim_emissao": br(fim)}
+    if venc_ini and venc_fim:
+        filtros |= {"data_ini_vencimento": br(venc_ini), "data_fim_vencimento": br(venc_fim)}
     contas: list[dict] = []
     pagina, total_pag, completa = 1, 1, True
     while True:
-        r = tiny(tk, "contas.receber.pesquisa.php",
-                 data_ini_emissao=br(mes), data_fim_emissao=br(fim_do_mes(mes)), pagina=pagina)
+        r = tiny(tk, "contas.receber.pesquisa.php", pagina=pagina, **filtros)
         if "_erro" in r:
             print(f"    ⚠️ página {pagina}: {r['_erro']}", file=sys.stderr)
             completa = False
@@ -196,6 +264,22 @@ def main() -> None:
         tk = env(var_token)
         for mes in meses(args.de, args.ate):
             contas, pags, completa = varre_mes(tk, mes)
+
+            # ⚠️ A MESMA CONTA PODE VIR EM DUAS PÁGINAS (desde 31/out/2026, 11 runs seguidos em
+            #    falha). A API pagina uma lista que muda enquanto a lemos: conta baixada entre uma
+            #    página e outra desloca o resto, e a conta da borda reaparece na página seguinte.
+            #    Duas linhas com o mesmo `id` no mesmo upsert derrubam o lote inteiro com
+            #    "ON CONFLICT DO UPDATE command cannot affect row a second time".
+            #    Remover a repetida não basta: se a lista deslocou, alguma conta pode ter sido
+            #    PULADA, e a dedução de baixa abaixo a marcaria como paga sem ela ter sido. Então
+            #    repetição = varredura incompleta — grava o que veio, mas não deduz baixa.
+            unicas = {str(c["id"]): c for c in contas}
+            repetidas = len(contas) - len(unicas)
+            if repetidas:
+                print(f"    ⚠️ {repetidas} conta(s) repetida(s) entre páginas — lista mudou "
+                      f"durante a leitura; sem dedução de baixa neste mês", file=sys.stderr)
+                contas = list(unicas.values())
+                completa = False
             total_lidas += len(contas)
 
             linhas, sem_nf = [], 0
