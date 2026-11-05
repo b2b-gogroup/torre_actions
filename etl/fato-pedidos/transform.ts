@@ -9,6 +9,7 @@ import { logger } from "../shared/logger.js";
 import { loadPedidosCancelados } from "../shared/pedidos-cancelados.js";
 import { CNPJS_GRUPO } from "./cnpjs-grupo.js";
 import type { ExtractedData } from "./extract.js";
+import { ratearCentavos } from "./extract-tiny-apice.js";
 import {
   PLACEHOLDER_UUID,
   PLACEHOLDER_CNPJ,
@@ -365,6 +366,11 @@ function normalizeProtheus(
     };
   });
 
+  const fretes = ratearFreteRepetido(rows, () => true);
+  if (fretes.pedidos > 0) {
+    logger.info(`Protheus — frete do pedido rateado entre os itens: ${fretes.pedidos} pedidos (R$ ${fretes.excesso.toFixed(2)} que contariam em dobro)`);
+  }
+
   if (clienteSemMatch.size > 0) {
     logger.warn("Protheus — cliente_id sem match em dim_cliente:", Object.fromEntries(
       [...clienteSemMatch.entries()].sort((a, b) => b[1] - a[1])
@@ -542,6 +548,13 @@ function normalizeTiny(
     };
   });
 
+  // tiny_es/tiny_rj já chegam com o frete rateado pelo extract (`desconto_rateado`); só o
+  // caminho do card (tiny_sp) traz o frete do pedido repetido em cada linha.
+  const fretesTiny = ratearFreteRepetido(rows, (i) => data[i].desconto_rateado !== true);
+  if (fretesTiny.pedidos > 0) {
+    logger.info(`Tiny (card) — frete do pedido rateado entre os itens: ${fretesTiny.pedidos} pedidos (R$ ${fretesTiny.excesso.toFixed(2)} que contariam em dobro)`);
+  }
+
   if (semMatch.size > 0) {
     logger.warn("Tiny — nome_vendedor sem match no dim_vendedor:", Object.fromEntries(
       [...semMatch.entries()].sort((a, b) => b[1] - a[1])
@@ -559,6 +572,54 @@ function normalizeTiny(
   }
 
   return rows;
+}
+
+// ============================================================
+// 5b. ratearFreteRepetido — frete do CABEÇALHO copiado em cada item
+// ============================================================
+// O Protheus (C5_FRETE) e o card do tiny_sp mandam o frete do PEDIDO em todas as linhas de
+// item. Toda leitura da Torre soma `valor_total + valor_frete` por linha (funil, relatório,
+// KPIs), então um pedido de 21 itens com frete de R$ 20 aparecia com R$ 420 de frete.
+// Medido em 05/nov/2026, 2026 inteiro: 677 pedidos Protheus (R$ 211.809,15 a mais) e 12
+// tiny_sp (R$ 38.876,00); nenhum pedido Protheus tinha frete variando entre linhas, então
+// "todas as linhas com o mesmo frete" identifica o caso sem ambiguidade.
+// O frete é repartido pelo valor do item, em centavos, com a soma fechando no frete do
+// pedido (mesmo `ratearCentavos` do Tiny API). Grupo = pedido + filial + NF, porque um
+// pedido faturado em duas NFs teria frete em cada uma (hoje: zero casos).
+// ⚠️ `elegivel` existe porque tiny_es/tiny_rj JÁ chegam rateados: num pedido em que o
+// rateio deu valores iguais por coincidência, ratear de novo dividiria o frete outra vez.
+
+function ratearFreteRepetido(
+  rows: FatoPedidoRow[],
+  elegivel: (i: number) => boolean,
+): { pedidos: number; excesso: number } {
+  const grupos = new Map<string, number[]>();
+  rows.forEach((r, i) => {
+    if (!elegivel(i)) return;
+    const k = `${r.erp_origem}|${r.filial_id}|${r.pedido_id}|${r.nf_numero ?? ""}`;
+    const g = grupos.get(k);
+    if (g) g.push(i); else grupos.set(k, [i]);
+  });
+
+  let pedidos = 0;
+  let excesso = 0;
+  for (const idx of grupos.values()) {
+    if (idx.length < 2) continue;
+    const frete = Math.round(Number(rows[idx[0]].valor_frete || 0) * 100) / 100;
+    if (frete === 0) continue;
+    const todosIguais = idx.every((i) => Math.round(Number(rows[i].valor_frete || 0) * 100) / 100 === frete);
+    if (!todosIguais) continue;
+
+    let pesos = idx.map((i) => Math.abs(Number(rows[i].valor_total || 0)));
+    if (pesos.reduce((a, p) => a + p, 0) <= 0) pesos = idx.map((i) => Math.abs(Number(rows[i].quantidade || 0)));
+    if (pesos.reduce((a, p) => a + p, 0) <= 0) pesos = idx.map(() => 1);
+
+    const partes = ratearCentavos(pesos, frete);
+    idx.forEach((i, j) => { rows[i] = { ...rows[i], valor_frete: partes[j] }; });
+    pedidos++;
+    excesso += frete * (idx.length - 1);
+  }
+  return { pedidos, excesso };
 }
 
 // ============================================================
