@@ -563,7 +563,7 @@ export async function flushEmailsClienteTiny(): Promise<void> {
  * re-detalhados nos próximos runs. NFs com erro de fetch NÃO entram (re-tentam depois).
  * Upsert idempotente; falha aqui é não-crítica (só perde a otimização do próximo run).
  */
-async function registrarNFsProcessadas(erp: string, numeros: string[]): Promise<void> {
+export async function registrarNFsProcessadas(erp: string, numeros: string[]): Promise<void> {
   // ⚠️ Teste/dev NUNCA pode marcar nota como processada: o cache diz "esta nota já está no banco", e
   // um teste que só LÊ a API mas registra a nota faz o ETL real pulá-la para sempre (30/09/2026: 18
   // notas, ~R$ 119 mil, sumiram do faturado por causa de um teste local). Com
@@ -683,7 +683,7 @@ export async function fetchNFsFaturadas(
   cfg: TinyApiceConfig,
   dataInicio: string,  // YYYY-MM-DD
   dataFim: string,
-): Promise<Record<string, unknown>[]> {
+): Promise<{ rows: Record<string, unknown>[]; processadasOk: string[] }> {
   logger.info(`Tiny API ${cfg.erp}: buscando NFs faturadas ${dataInicio} → ${dataFim}`);
 
   // Converte para DD/MM/YYYY (formato Tiny)
@@ -958,8 +958,20 @@ export async function fetchNFsFaturadas(
     }
   }
 
-  // Grava no cache as NFs detalhadas neste run (não re-detalhar depois)
-  await registrarNFsProcessadas(cfg.erp, processadasOk);
+  // NÃO grava mais o cache aqui. Até 11/nov/2026 este ponto já fazia
+  // `registrarNFsProcessadas(cfg.erp, processadasOk)` — ou seja, a NF virava "não detalhar de
+  // novo" no mesmo instante em que o extract terminava, ANTES de transformAll/loadBatches
+  // rodarem. Se o load falhasse depois (um batch só, nem precisa ser o ETL inteiro — ver
+  // loadBatches: batch que falha incrementa `batchesFailed` e segue, não aborta), a NF ficava
+  // com itens prontos em `rows`, nunca inserida em fato_pedidos, e cacheada como "já vista" —
+  // nenhum run futuro voltava nela. Achado real: NF 002303 da FELSKI COMERCIAL (tiny_rj),
+  // autorizada pela SEFAZ em 11/nov, cacheada 13 min depois e nunca carregada; uma varredura
+  // no cache achou o mesmo padrão (dezenas de NFs consecutivas, mesmo timestamp de processamento,
+  // sem linha em fato_pedidos) em vários meses — não era a Felski, era a ordem das operações.
+  // Devolve `processadasOk` para quem chama só gravar DEPOIS que o load confirmar sucesso
+  // (ver index.ts) — reler uma NF que já foi carregada com sucesso é só UPSERT redundante,
+  // nunca duplica nem perde; não cachear uma NF cujo load falhou é o que a mantém viva para a
+  // próxima tentativa.
   await gravarCacheDataPedido(cfg.erp, pendentesDataPedido);
   if (pendentesDataPedido.length > 0) {
     const comData = pendentesDataPedido.filter(p => p.data_pedido).length;
@@ -970,7 +982,7 @@ export async function fetchNFsFaturadas(
   }
 
   logger.info(`Tiny API ${cfg.erp}: ${rows.length} itens extraídos (${skipped} NFs puladas)`);
-  return rows;
+  return { rows, processadasOk };
 }
 
 // ── Extração de pedidos em aberto ─────────────────────────────────────────────

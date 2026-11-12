@@ -140,6 +140,11 @@ export interface ExtractedData {
   // Tiny vendas (ES/RJ via API Tiny; SP/BB via Metabase)
   tinyAPRJ: Record<string, unknown>[];
   tinyAPES: Record<string, unknown>[];
+  // NFs que fetchNFsFaturadas detalhou com sucesso neste run (candidatas ao cache
+  // tiny_nf_processadas) — só são gravadas de fato em index.ts, e só se loadBatches
+  // confirmar que entraram no banco (ver nota em fetchNFsFaturadas, 11/nov/2026).
+  tinyAPESProcessadas: string[];
+  tinyAPRJProcessadas: string[];
   // NFs canceladas ES/RJ — para marcar status=Cancelado no banco
   tinyAPESCanceladas: string[];
   tinyAPRJCanceladas: string[];
@@ -460,27 +465,31 @@ export async function extractAll(): Promise<ExtractedData> {
   // ES: NFs → pedidos → canceladas (sequencial, 500ms entre cada call)
   if (CFG_ES.token) {
     logger.info("Tiny API ES: iniciando (sequencial para evitar rate limit)");
-    try { data.tinyAPES = await fetchNFsFaturadas(CFG_ES, TINY_API_INICIO, TINY_API_FIM); }
-    catch (e) { logger.warn(`tinyAPES falhou: ${e}`); data.tinyAPES = []; }
+    try {
+      const r = await fetchNFsFaturadas(CFG_ES, TINY_API_INICIO, TINY_API_FIM);
+      data.tinyAPES = r.rows; data.tinyAPESProcessadas = r.processadasOk;
+    } catch (e) { logger.warn(`tinyAPES falhou: ${e}`); data.tinyAPES = []; data.tinyAPESProcessadas = []; }
     try { data.tinyAPESPedidos = await fetchPedidosAbertos(CFG_ES, TINY_PEDIDOS_INICIO, TINY_API_FIM); }
     catch (e) { logger.warn(`tinyAPESPedidos falhou: ${e}`); data.tinyAPESPedidos = []; }
     try { data.tinyAPESCanceladas = await fetchNFsCanceladas(CFG_ES, TINY_API_INICIO, TINY_API_FIM); }
     catch (e) { logger.warn(`tinyAPESCanceladas falhou: ${e}`); data.tinyAPESCanceladas = []; }
   } else {
-    data.tinyAPES = []; data.tinyAPESPedidos = []; data.tinyAPESCanceladas = [];
+    data.tinyAPES = []; data.tinyAPESProcessadas = []; data.tinyAPESPedidos = []; data.tinyAPESCanceladas = [];
   }
 
   // RJ: NFs → pedidos → canceladas (sequencial)
   if (CFG_RJ.token) {
     logger.info("Tiny API RJ: iniciando (sequencial para evitar rate limit)");
-    try { data.tinyAPRJ = await fetchNFsFaturadas(CFG_RJ, TINY_API_INICIO, TINY_API_FIM); }
-    catch (e) { logger.warn(`tinyAPRJ falhou: ${e}`); data.tinyAPRJ = []; }
+    try {
+      const r = await fetchNFsFaturadas(CFG_RJ, TINY_API_INICIO, TINY_API_FIM);
+      data.tinyAPRJ = r.rows; data.tinyAPRJProcessadas = r.processadasOk;
+    } catch (e) { logger.warn(`tinyAPRJ falhou: ${e}`); data.tinyAPRJ = []; data.tinyAPRJProcessadas = []; }
     try { data.tinyAPRJPedidos = await fetchPedidosAbertos(CFG_RJ, TINY_PEDIDOS_INICIO, TINY_API_FIM); }
     catch (e) { logger.warn(`tinyAPRJPedidos falhou: ${e}`); data.tinyAPRJPedidos = []; }
     try { data.tinyAPRJCanceladas = await fetchNFsCanceladas(CFG_RJ, TINY_API_INICIO, TINY_API_FIM); }
     catch (e) { logger.warn(`tinyAPRJCanceladas falhou: ${e}`); data.tinyAPRJCanceladas = []; }
   } else {
-    data.tinyAPRJ = []; data.tinyAPRJPedidos = []; data.tinyAPRJCanceladas = [];
+    data.tinyAPRJ = []; data.tinyAPRJProcessadas = []; data.tinyAPRJPedidos = []; data.tinyAPRJCanceladas = [];
   }
 
   // Array.isArray na soma: uma fonte com retorno inválido fazia o total virar NaN

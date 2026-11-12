@@ -3,7 +3,7 @@ import { updateWatermark } from "../shared/watermark.js";
 import { extractAll } from "./extract.js";
 import { transformAll } from "./transform.js";
 import { loadBatches } from "./load.js";
-import { flushEmailsClienteTiny, flushReprovadosTiny, flushUplacesTiny } from "./extract-tiny-apice.js";
+import { flushEmailsClienteTiny, flushReprovadosTiny, flushUplacesTiny, registrarNFsProcessadas } from "./extract-tiny-apice.js";
 import { cadastrarClientesNovos } from "./cliente-novo.js";
 
 const WORKFLOW_NAME = "etl_fato_pedidos";
@@ -56,6 +56,27 @@ async function main() {
       cargaEm,
       cargaRun: cargaRun ?? undefined,
     });
+
+    // Cache de "NF já detalhada" (tiny_nf_processadas) só é gravado AQUI, depois do load —
+    // nunca dentro do extract. Até 11/nov/2026 ele era gravado no fim de fetchNFsFaturadas,
+    // antes de qualquer confirmação de que os itens tinham entrado em fato_pedidos: um batch
+    // que falhasse no load (loadBatches não aborta por isso, só conta em batchesFailed) perdia
+    // a NF para sempre, porque o próximo run pulava ela achando que já estava carregada. Com
+    // batchesFailed > 0 não há como saber QUAIS NFs couberam no batch que falhou sem rastrear
+    // batch a batch — então nenhuma NF deste run é cacheada, e todas são re-detalhadas no
+    // próximo (upsert é idempotente; custa só a chamada extra à API do Tiny).
+    if (result.batchesFailed === 0) {
+      try { await registrarNFsProcessadas("tiny_es", (sources.tinyAPESProcessadas as string[]) ?? []); }
+      catch (e) { logger.warn(`registrarNFsProcessadas tiny_es falhou (não-crítico): ${e}`); }
+      try { await registrarNFsProcessadas("tiny_rj", (sources.tinyAPRJProcessadas as string[]) ?? []); }
+      catch (e) { logger.warn(`registrarNFsProcessadas tiny_rj falhou (não-crítico): ${e}`); }
+    } else {
+      logger.warn(
+        `${result.batchesFailed}/${result.batches} batches falharam — NFs deste run NÃO entram ` +
+        `no cache tiny_nf_processadas, serão re-detalhadas no próximo run`
+      );
+    }
+
     const sec = ((Date.now() - startTime) / 1000).toFixed(1);
 
     await updateWatermark(WORKFLOW_NAME, {
