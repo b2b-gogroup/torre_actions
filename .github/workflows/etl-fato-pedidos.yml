@@ -8,6 +8,11 @@ name: ETL fato_pedidos (intraday skip)
 # Ver docs/etl-fato-pedidos.md §6.
 on:
   workflow_dispatch:
+    inputs:
+      tiny_api_inicio:
+        description: 'Backfill pontual: data fixa (YYYY-MM-DD) para sobrescrever a janela padrão (1º dia do mês anterior). Deixar vazio para o comportamento normal.'
+        type: string
+        default: ''
   schedule:
     # 8x/dia. ETL é rápido (~6-14min). Alvos (BRT): 08:00 · 09:30 · 10:30 · 12:00 ·
     # 13:00 · 14:30 · 15:00 · 16:00. Convertido p/ UTC (BRT+3).
@@ -69,7 +74,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
           TINY_TOKEN_ES: ${{ secrets.TINY_TOKEN_ES }}
           TINY_TOKEN_RJ: ${{ secrets.TINY_TOKEN_RJ }}
-          TINY_API_INICIO: ${{ secrets.TINY_API_INICIO }}
+          TINY_API_INICIO: ${{ github.event.inputs.tiny_api_inicio || secrets.TINY_API_INICIO }}
           # Pula o detalhe (caro) de NF já carregada. Seguro (delete-by-nf_numero em modo skip).
           ETL_SKIP_NF_CARREGADAS: "true"
           # Pedidos abertos: janela de 7 dias no intraday (full usa 30). Mantém o funil
