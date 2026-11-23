@@ -243,32 +243,46 @@ def _pegar_codigo_2fa(gmail_user: str, gmail_senha: str, momento_login: datetime
     for tentativa in range(1, tentativas + 1):
         print(f"  [2fa] aguardando {aguardar}s (tentativa {tentativa}/{tentativas})...")
         time.sleep(aguardar)
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        # 23/nov/2026: queda de rede/TLS no IMAP (SSLEOFError, IMAP4.abort) matava a rodada inteira -- ate no
+        # logout() de limpeza (run 45179947677, Rafael). Agora vale como "ainda nao achei" e a proxima volta
+        # abre conexao nova. ⚠️ `IMAP4.abort` E SUBCLASSE de `IMAP4.error`: tem de vir ANTES, senao queda de
+        # rede vira "credencial do Gmail invalida".
         try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(gmail_user, gmail_senha)
+        except (imaplib.IMAP4.abort, OSError) as exc:
+            print(f"  [2fa] conexao com o Gmail falhou ({exc}) -- tento de novo na proxima volta")
+            continue
         except imaplib.IMAP4.error as exc:
             # Credencial recusada nao melhora esperando -- aborta na hora em vez
             # de queimar as 3 tentativas restantes (60s) escondendo a causa.
             raise CredencialGmailInvalida(_msg_credencial(gmail_user, exc)) from exc
         candidatos = []
-        for pasta in _pastas_de_busca(mail):
-            uids = _uids_do_mercos(mail, pasta)[-10:]
-            if not uids:
-                continue
-            for uid in uids:
-                _, msg_data = mail.fetch(uid, "(RFC822)")
-                msg = email_lib.message_from_bytes(msg_data[0][1])
-                try:
-                    data_email = parsedate_to_datetime(msg.get("Date"))
-                except Exception:
+        try:
+            for pasta in _pastas_de_busca(mail):
+                uids = _uids_do_mercos(mail, pasta)[-10:]
+                if not uids:
                     continue
-                if data_email < corte:
-                    continue
-                candidatos.append((data_email, msg))
-            if candidatos:
-                break  # "Todos os e-mails" ja contem o INBOX -- nao varrer de novo
-        ultimo_estado = _estado_da_caixa(mail)
-        mail.logout()
+                for uid in uids:
+                    _, msg_data = mail.fetch(uid, "(RFC822)")
+                    msg = email_lib.message_from_bytes(msg_data[0][1])
+                    try:
+                        data_email = parsedate_to_datetime(msg.get("Date"))
+                    except Exception:
+                        continue
+                    if data_email < corte:
+                        continue
+                    candidatos.append((data_email, msg))
+                if candidatos:
+                    break  # "Todos os e-mails" ja contem o INBOX -- nao varrer de novo
+            ultimo_estado = _estado_da_caixa(mail)
+        except (imaplib.IMAP4.abort, OSError) as exc:
+            print(f"  [2fa] conexao com o Gmail caiu no meio da leitura ({exc}) -- tento de novo na proxima volta")
+        finally:
+            try:
+                mail.logout()
+            except Exception:
+                pass  # limpeza: conexao ja caida nao pode derrubar o login
 
         if candidatos:
             candidatos.sort(key=lambda par: par[0])
