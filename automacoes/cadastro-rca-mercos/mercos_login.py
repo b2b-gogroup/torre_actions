@@ -59,9 +59,11 @@ except ModuleNotFoundError:  # pragma: no cover
     # `Page` aqui e so anotacao; onde o Playwright existe, nada muda.
     from typing import Any as Page  # type: ignore[assignment]
 
-# 23/nov/2026: + as 6 caixinhas de 1 digito, sem depender do nome de classe CSS -- o robo de fotos no GitHub
-# logou, o Mercos MANDOU o codigo por e-mail e o robo disse "pediu 2FA: False" e travou em /login.
-SELETOR_INPUT_CODIGO = 'input[class*="inputCodigoAutenticacao"], input[maxlength="1"]'
+# 16/nov/2026: o Mercos trocou a tela do codigo (classe FormCodigoAutenticacao__inputCodigo___xxx, name="digitos.0..5").
+# Sem casar o novo seletor o robo achava "pediu 2FA: False" e morria em "login nao assentou" (Actions e local).
+# 23/nov/2026: + `maxlength="1"` (as 6 caixinhas, sem depender de classe/nome) -- validado no robo de fotos do
+# torre_actions, cuja copia deste arquivo nao tinha a correcao de 16/nov.
+SELETOR_INPUT_CODIGO = 'input[class*="inputCodigoAutenticacao"], input[name^="digitos."], input[maxlength="1"]'
 
 
 class CredencialGmailInvalida(RuntimeError):
