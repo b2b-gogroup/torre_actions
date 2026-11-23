@@ -37,7 +37,7 @@ name: Mercos RJ — subir fotos de produto
 
 on:
   schedule:
-    - cron: '47 16 * * *'   # 13h47 BRT (UTC-3) -- longe do crédito (19h30) e do fotos ES (20h22)
+    - cron: '47 16 * * *'   # 13h47 BRT (UTC-3) -- longe do crédito (20h23) e do fotos ES (14h47, mesma fila `mercos-fotos-italo`)
   workflow_dispatch:
     inputs:
       modo:
@@ -54,6 +54,10 @@ on:
       forcar_skus:
         description: "Opcional — CSV de SKUs exatos, mesma furada de guarda acima só pra esses SKUs."
         required: false
+
+concurrency:
+  group: mercos-fotos-italo
+  cancel-in-progress: false
 
 jobs:
   subir:
