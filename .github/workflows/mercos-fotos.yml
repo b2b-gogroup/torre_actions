@@ -36,7 +36,7 @@ name: Mercos — subir fotos de produto
 
 on:
   schedule:
-    - cron: '22 23 * * *'   # 20h22 BRT (UTC-3)
+    - cron: '47 17 * * *'   # 14h47 BRT nominal (23/nov/2026: saiu de 20h22, 1 min do cron do crédito 20h23 -- o atraso do GitHub fazia os dois logarem juntos com a mesma conta)
   workflow_dispatch:
     inputs:
       modo:
@@ -56,6 +56,10 @@ on:
       forcar_skus:
         description: "Opcional — CSV de SKUs exatos, mesma furada de guarda acima só pra esses SKUs."
         required: false
+
+concurrency:
+  group: mercos-fotos-italo
+  cancel-in-progress: false
 
 jobs:
   subir:
