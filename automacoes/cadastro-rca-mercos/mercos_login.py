@@ -6,7 +6,7 @@ por escritor.py (e qualquer script futuro que precise logar no Mercos a
 partir do GitHub Actions).
 
 Consolida os bugs reais encontrados testando ao vivo 23/jul/2026 (relato
-completo em CadastroRCA-Mercos/decisoes-e-plano.md e arquitetura-producao.md
+completo em projetos/cadastro-rca-mercos/decisoes-e-plano.md e arquitetura-producao.md
 no repo torre_de_performance_b2b):
 
 1. CI SEMPRE pede 2FA -- runner e maquina nova, sem sessao/cookie confiavel
@@ -46,7 +46,7 @@ import imaplib
 import re
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 try:
@@ -59,7 +59,9 @@ except ModuleNotFoundError:  # pragma: no cover
     # `Page` aqui e so anotacao; onde o Playwright existe, nada muda.
     from typing import Any as Page  # type: ignore[assignment]
 
-SELETOR_INPUT_CODIGO = 'input[class*="inputCodigoAutenticacao"]'
+# 23/nov/2026: + as 6 caixinhas de 1 digito, sem depender do nome de classe CSS -- o robo de fotos no GitHub
+# logou, o Mercos MANDOU o codigo por e-mail e o robo disse "pediu 2FA: False" e travou em /login.
+SELETOR_INPUT_CODIGO = 'input[class*="inputCodigoAutenticacao"], input[maxlength="1"]'
 
 
 class CredencialGmailInvalida(RuntimeError):
@@ -172,8 +174,8 @@ def _msg_caixa_errada(gmail_user: str, mercos_email: str) -> str:
         "(MERCOS_EMAIL) -- nao para uma caixa fixa. Conserto: gerar um App "
         "Password em myaccount.google.com/apppasswords COM A CONTA DO "
         "MERCOS_EMAIL e atualizar GMAIL_USER/GMAIL_SENHA nos espelhos do "
-        "rodizio (b2b-gogroup/torre_b2b, leandroperruci-web/"
-        "torre_de_performance_b2b, italo-mgl/torre_etl)." % (gmail_user, relacao)
+        "rodizio (hoje so italocosta-gb/torre_etl; ver "
+        "docs/contexto/onde-roda-cada-automacao.md)." % (gmail_user, relacao)
     )
 
 
@@ -217,8 +219,8 @@ def _msg_credencial(gmail_user: str, exc: Exception) -> str:
         "mudar, se o 2SV for reconfigurado ou se o admin do Workspace bloquear "
         "app password. Gere outro em myaccount.google.com/apppasswords com a "
         "conta que recebe o 2FA do Mercos e atualize o secret GMAIL_SENHA nos 3 "
-        "espelhos (b2b-gogroup/torre_b2b, leandroperruci-web/"
-        "torre_de_performance_b2b, italo-mgl/torre_etl)."
+        "espelho ativo (italocosta-gb/torre_etl; ver "
+        "docs/contexto/onde-roda-cada-automacao.md)."
     )
 
 
@@ -228,6 +230,14 @@ def _pegar_codigo_2fa(gmail_user: str, gmail_senha: str, momento_login: datetime
     """Pega o codigo do e-mail do Mercos posterior a 'momento_login'.
     Ver bugs 3, 6 e 7 no docstring do modulo."""
     ultimo_estado = (0, None, None)
+    # O cabecalho Date do e-mail tem resolucao de SEGUNDO e o momento_login tem
+    # microssegundo: codigo enviado no mesmo segundo do clique (22:07:51 contra
+    # 22:07:51.361, medido 28/out/2026) era descartado como "anterior ao login" e
+    # a rodada abortava dizendo que o Mercos nao mandou codigo. Compara no segundo.
+    # 03/nov/2026: o Mercos passou a mandar o codigo ANTES do instante que o robo marca (e-mail 13:16:46 contra
+    # login 13:16:47, nas duas contas) e a rodada morria dizendo "o Mercos nao mandou". Folga de 30 s; entre os
+    # candidatos vale sempre o mais novo, entao um codigo velho so entra se nao houver nenhum desta rodada.
+    corte = momento_login.replace(microsecond=0) - timedelta(seconds=30)
     for tentativa in range(1, tentativas + 1):
         print(f"  [2fa] aguardando {aguardar}s (tentativa {tentativa}/{tentativas})...")
         time.sleep(aguardar)
@@ -250,7 +260,7 @@ def _pegar_codigo_2fa(gmail_user: str, gmail_senha: str, momento_login: datetime
                     data_email = parsedate_to_datetime(msg.get("Date"))
                 except Exception:
                     continue
-                if data_email <= momento_login:
+                if data_email < corte:
                     continue
                 candidatos.append((data_email, msg))
             if candidatos:
@@ -274,7 +284,7 @@ def _pegar_codigo_2fa(gmail_user: str, gmail_senha: str, momento_login: datetime
 
             match = re.search(r"(?<!#)\b(\d{6})\b", body)
             if match:
-                print(f"  [2fa] codigo encontrado: {match.group(1)}")
+                print("  [2fa] codigo encontrado (6 digitos, nao logado por seguranca)")  # auditoria 06/nov/2026 (A-08)
                 return match.group(1)
 
         print(f"  [2fa] nenhum e-mail novo ainda (posterior a {momento_login.isoformat()})")
@@ -425,10 +435,24 @@ def _login_mercos_uma_vez(page: Page, empresa_id: str, mercos_email: str, mercos
         page.wait_for_url(lambda url: "login" not in url, timeout=15_000)
     except Exception:
         pass
-    page.wait_for_load_state("domcontentloaded", timeout=30_000)
-    time.sleep(2)
-
-    pediu_2fa = page.locator(SELETOR_INPUT_CODIGO).count() > 0
+    # Tolerante (28/out/2026): esta espera derrubava o login INTEIRO com
+    # TimeoutError -- que nao e RuntimeError, entao nem entrava nas tentativas --
+    # antes de olhar a tela. Medido 2x seguidas no escritor local com a conta
+    # do Israel, minutos depois de a varredura logar com a mesma conta. Quem
+    # decide se o login andou sao os passos de baixo (campo do 2FA, INDICADORES,
+    # URL saindo de /login), nao o evento de carga da pagina.
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=30_000)
+    except Exception:
+        print(f"  [login] pagina pos-senha nao terminou de carregar em 30s (url={page.url}) -- seguindo")
+    # Espera ate 15 s a tela do codigo aparecer OU a URL sair do /login (IP confiado, sem 2FA: sai na hora).
+    # Antes era uma olhada so aos 2 s: tela de codigo lenta virava "nao pediu 2FA" e o login travava.
+    limite_2fa = time.time() + 15
+    while True:
+        pediu_2fa = page.locator(SELETOR_INPUT_CODIGO).count() > 0
+        if pediu_2fa or "/login" not in page.url or time.time() > limite_2fa:
+            break
+        time.sleep(0.5)
     print(f"  [login] pediu 2FA: {pediu_2fa}")
 
     if pediu_2fa:
@@ -443,7 +467,11 @@ def _login_mercos_uma_vez(page: Page, empresa_id: str, mercos_email: str, mercos
                 "Ou use uma conta que nao pede 2FA, ou configure a caixa que "
                 "recebe o codigo (App Password do Google)."
             )
+        # 29/out: intervalo da leitura do e-mail configuravel (pedido do Italo: "agilize o login"). O padrao
+        # segue 20 s x 4; com MERCOS_2FA_INTERVALO_S=5 o robo olha a caixa a cada 5 s pelo mesmo tempo total.
+        intervalo = int(os.environ.get("MERCOS_2FA_INTERVALO_S") or 20)
         codigo = _pegar_codigo_2fa(gmail_user, gmail_senha, momento_login,
+                                   aguardar=intervalo, tentativas=max(4, 80 // max(intervalo, 1)),
                                    mercos_email=mercos_email)
         inputs = page.locator(SELETOR_INPUT_CODIGO)
         if inputs.count() != 6:
@@ -488,12 +516,39 @@ def _login_mercos_uma_vez(page: Page, empresa_id: str, mercos_email: str, mercos
         page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
         pass
+    # 🔴 28/out/2026: o robo de credito morreu 3x seguidas aqui (run 40705135773) com o
+    # codigo 2FA lido e digitado e o "INDICADORES" ja na tela -- ou seja, o 2FA PASSOU e
+    # quem travou foi a cadeia de redirect, que ficou parada em /login?next=... . Antes de
+    # desistir, pede o painel da empresa DIRETO: se o cookie de sessao existe, o goto entra;
+    # se nao existe, o Mercos devolve /login de novo e a falha e real.
     if "/login" in page.url:
+        print(f"  [login] URL parada em {page.url} depois do 2FA -- abrindo o painel direto")
+        try:
+            page.goto(f"https://app.mercos.com/{empresa_id}/guia_inicial/",
+                      wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
+    if "/login" in page.url:
+        # Sem print e sem o texto da tela, "nao assentou" nao diz o que o Mercos mostrou
+        # (aviso de outra sessao? codigo recusado? captcha?) -- e foi isso que faltou em 28/out.
+        texto = ""
+        try:
+            texto = " ".join((page.inner_text("body", timeout=5_000) or "").split())[:400]
+        except Exception:
+            pass
+        try:
+            os.makedirs("logs", exist_ok=True)
+            page.screenshot(path=os.path.join(
+                "logs", f"login-nao-assentou-{datetime.now(timezone.utc):%H%M%S}.png"), full_page=True)
+        except Exception:
+            pass
+        print(f"  [login] tela parada em /login: {texto!r}")
         raise RuntimeError(
             "O login nao assentou: depois de 30s a sessao ainda esta em "
             f"{page.url}. Isto NAO e 'sessao caiu no meio da rodada' -- ela "
             "nunca chegou a existir. Conferir credencial/2FA antes de olhar "
-            "as telas seguintes."
+            f"as telas seguintes. Tela: {texto[:200]!r}"
         )
 
     # 🔴 27/out/2026: o Mercos passou a OBRIGAR a conta a ativar a verificacao
