@@ -53,6 +53,7 @@ async function main() {
     const result = await loadBatches(allItems, {
       canceladasES: sources.tinyAPESCanceladas as string[],
       canceladasRJ: sources.tinyAPRJCanceladas as string[],
+      abertosFalhou: sources.abertosFalhou,
       cargaEm,
       cargaRun: cargaRun ?? undefined,
     });

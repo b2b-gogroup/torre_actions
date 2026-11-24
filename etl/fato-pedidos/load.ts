@@ -126,6 +126,7 @@ export interface LoadResult {
 export interface LoadOptions {
   canceladasES?: string[];  // NF números canceladas Apice ES
   canceladasRJ?: string[];  // NF números canceladas Apice RJ
+  abertosFalhou?: string[];  // erp_origem sem leitura de abertos neste run — não apagar os abertos deles
   /**
    * Hora de início deste run do ETL — vira o carimbo de chegada em `fato_pedido_carga`.
    * ⚠️ É UM valor para o lote inteiro, de propósito. Usar `now()` por batch daria segundos
@@ -421,12 +422,16 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
         const dataCorte = new Date();
         dataCorte.setDate(dataCorte.getDate() - delDias);
         const dataInt = parseInt(dataCorte.toISOString().slice(0, 10).replace(/-/g, ""), 10);
+        // Busca de abertos que falhou devolve [] — apagar sem repor some o funil (24/nov/2026).
+        const semLeitura = opts.abertosFalhou ?? [];
+        if (semLeitura.length > 0) logger.warn(`DELETE de abertos PULADO para ${semLeitura.join(", ")}: a busca de abertos falhou neste run`);
         await delAbertoClient.query(`
           DELETE FROM fato_pedidos
           WHERE erp_origem IN ('tiny_es', 'tiny_rj')
+            AND erp_origem <> ALL($2::text[])
             AND lower(status) NOT IN ('faturado', 'cancelado')
             AND data_pedido_id >= $1
-        `, [dataInt]);
+        `, [dataInt, semLeitura]);
         logger.info(`DELETE pedidos abertos tiny_es/rj >= ${dataInt} (janela ${delDias}d) concluído`);
       } finally {
         delAbertoClient.release();

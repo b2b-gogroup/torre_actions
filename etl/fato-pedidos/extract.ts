@@ -154,6 +154,8 @@ export interface ExtractedData {
   tinyAPESPedidos: Record<string, unknown>[];
   tinyAPRJPedidos: Record<string, unknown>[];
   tinyAPSPPedidos: Record<string, unknown>[];
+  /** erp_origem cuja busca de pedidos abertos falhou neste run (ex.: "tiny_es") — ver load.ts. */
+  abertosFalhou: string[];
   // Lookups
   carteiraRCAs: Record<string, string>[];
   // Visão compartilhada por cliente (11/set/2026). NÃO é dono — é co-titular: habilita
@@ -458,6 +460,9 @@ export async function extractAll(): Promise<ExtractedData> {
   // janela (não toca nos mais antigos, que vêm do full da manhã). Ver docs/etl-fato-pedidos.md §6.
   // 60d (não 30d) garante cobertura do mês inteiro + buffer — pedidos de início de mês
   // não ficam stale quando o cron intraday (7d) domina por vários dias sem full rodar.
+  // ERPs cuja busca de abertos falhou neste run: o load NÃO apaga os abertos deles (24/nov/2026 —
+  // rate limit do ES na full zerou 26 pedidos/R$ 501 mil; o catch devolvia [] e o DELETE seguia).
+  data.abertosFalhou = [];
   const ABERTOS_DIAS = parseInt(process.env.ETL_ABERTOS_DIAS ?? "60", 10) || 60;
   const TINY_PEDIDOS_INICIO = (() => { const d = new Date(); d.setDate(d.getDate() - ABERTOS_DIAS); return d.toISOString().slice(0, 10); })();
   logger.info(`Pedidos abertos: janela ${ABERTOS_DIAS} dias (${TINY_PEDIDOS_INICIO} → hoje)`);
@@ -470,7 +475,7 @@ export async function extractAll(): Promise<ExtractedData> {
       data.tinyAPES = r.rows; data.tinyAPESProcessadas = r.processadasOk;
     } catch (e) { logger.warn(`tinyAPES falhou: ${e}`); data.tinyAPES = []; data.tinyAPESProcessadas = []; }
     try { data.tinyAPESPedidos = await fetchPedidosAbertos(CFG_ES, TINY_PEDIDOS_INICIO, TINY_API_FIM); }
-    catch (e) { logger.warn(`tinyAPESPedidos falhou: ${e}`); data.tinyAPESPedidos = []; }
+    catch (e) { logger.warn(`tinyAPESPedidos falhou: ${e}`); data.tinyAPESPedidos = []; data.abertosFalhou.push("tiny_es"); }
     try { data.tinyAPESCanceladas = await fetchNFsCanceladas(CFG_ES, TINY_API_INICIO, TINY_API_FIM); }
     catch (e) { logger.warn(`tinyAPESCanceladas falhou: ${e}`); data.tinyAPESCanceladas = []; }
   } else {
@@ -485,7 +490,7 @@ export async function extractAll(): Promise<ExtractedData> {
       data.tinyAPRJ = r.rows; data.tinyAPRJProcessadas = r.processadasOk;
     } catch (e) { logger.warn(`tinyAPRJ falhou: ${e}`); data.tinyAPRJ = []; data.tinyAPRJProcessadas = []; }
     try { data.tinyAPRJPedidos = await fetchPedidosAbertos(CFG_RJ, TINY_PEDIDOS_INICIO, TINY_API_FIM); }
-    catch (e) { logger.warn(`tinyAPRJPedidos falhou: ${e}`); data.tinyAPRJPedidos = []; }
+    catch (e) { logger.warn(`tinyAPRJPedidos falhou: ${e}`); data.tinyAPRJPedidos = []; data.abertosFalhou.push("tiny_rj"); }
     try { data.tinyAPRJCanceladas = await fetchNFsCanceladas(CFG_RJ, TINY_API_INICIO, TINY_API_FIM); }
     catch (e) { logger.warn(`tinyAPRJCanceladas falhou: ${e}`); data.tinyAPRJCanceladas = []; }
   } else {
