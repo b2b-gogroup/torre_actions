@@ -6,6 +6,7 @@ import { janelaProtheus, filtrarPorDataPedido } from "./janela-protheus.js";
 import {
   fetchNFsFaturadas,
   fetchPedidosAbertos,
+  pedidosDetalheFalhou,
   fetchNFsCanceladas,
   type TinyApiceConfig,
 } from "./extract-tiny-apice.js";
@@ -156,6 +157,8 @@ export interface ExtractedData {
   tinyAPSPPedidos: Record<string, unknown>[];
   /** erp_origem cuja busca de pedidos abertos falhou neste run (ex.: "tiny_es") — ver load.ts. */
   abertosFalhou: string[];
+  /** "erp:numero" de pedidos abertos cujo detalhe falhou — o load preserva o aberto antigo deles. */
+  abertosDetalheFalhou: string[];
   // Lookups
   carteiraRCAs: Record<string, string>[];
   // Visão compartilhada por cliente (11/set/2026). NÃO é dono — é co-titular: habilita
@@ -496,6 +499,8 @@ export async function extractAll(): Promise<ExtractedData> {
   } else {
     data.tinyAPRJ = []; data.tinyAPRJProcessadas = []; data.tinyAPRJPedidos = []; data.tinyAPRJCanceladas = [];
   }
+
+  data.abertosDetalheFalhou = Array.from(pedidosDetalheFalhou);
 
   // Array.isArray na soma: uma fonte com retorno inválido fazia o total virar NaN
   // ("Extração completa: NaN registros totais") e escondia o problema no log.

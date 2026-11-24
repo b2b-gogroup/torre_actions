@@ -83,6 +83,9 @@ const SIT_PED_IGNORAR = new Set([
   "Enviado", "Pronto para envio",   // 1.748/1.748 já tinham NF — ver bloco acima
 ]);
 
+/** `erp:numero` dos pedidos abertos cujo DETALHE falhou neste run (lido por extract.ts → load.ts). */
+export const pedidosDetalheFalhou = new Set<string>();
+
 /** Mapa de situação Tiny → status fato_pedidos */
 const SIT_PED_MAP: Record<string, string> = {
   "Em aberto":         "Em aberto",
@@ -1050,6 +1053,8 @@ export async function fetchPedidosAbertos(
         return { pedHeader, det };
       } catch (e) {
         logger.warn(`${cfg.erp}: erro ao obter pedido ${pedHeader.numero}: ${e}`);
+        // O load não apaga o aberto antigo deste pedido (senão ele some até o próximo full).
+        pedidosDetalheFalhou.add(`${cfg.erp}:${String(pedHeader.numero ?? "").trim()}`);
         return null;
       }
     },

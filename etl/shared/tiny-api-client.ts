@@ -34,10 +34,12 @@ export async function tinyPost(
   const json = await res.json() as Record<string, unknown>;
   const retorno = (json.retorno ?? {}) as Record<string, unknown>;
 
-  // Erro 6 = rate limit — retry com backoff exponencial (máx 3 tentativas)
+  // Erro 6 = rate limit — retry com backoff exponencial (máx 5 tentativas, ~2 min no total).
+  // 24/nov/2026: com 2/4/8 s (14 s) a busca de pedidos abertos do ES desistia logo depois dos ~43 min de
+  // detalhe de NF no mesmo token — o bloqueio do Tiny dura ~1 min.
   if (retorno.codigo_erro === 6 || retorno.codigo_erro === "6") {
-    if (attempt >= 3) throw new Error(`Tiny API rate limit após ${attempt} tentativas: ${endpoint}`);
-    const backoff = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s
+    if (attempt >= 5) throw new Error(`Tiny API rate limit após ${attempt} tentativas: ${endpoint}`);
+    const backoff = 5000 * Math.pow(2, attempt); // 5s, 10s, 20s, 40s, 80s
     await sleep(backoff);
     return tinyPost(endpoint, token, params, attempt + 1);
   }

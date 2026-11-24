@@ -54,6 +54,7 @@ async function main() {
       canceladasES: sources.tinyAPESCanceladas as string[],
       canceladasRJ: sources.tinyAPRJCanceladas as string[],
       abertosFalhou: sources.abertosFalhou,
+      abertosDetalheFalhou: sources.abertosDetalheFalhou,
       cargaEm,
       cargaRun: cargaRun ?? undefined,
     });
