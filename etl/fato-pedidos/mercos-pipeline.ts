@@ -96,6 +96,14 @@ const STATUS_PIPELINE = new Set([
 ]);
 
 /**
+ * Exceção à regra acima: pedido em "Erro na Integração" que o comercial RESOLVEU POR FORA (pago e
+ * enviado) e que deve contar como venda. Chave = `REGIAO|numero`. Entra como "Em separação".
+ * Quando ele integrar de verdade no Protheus, sai sozinho daqui (jaNoCard/faturadoNoProtheus).
+ * - ES|13804 — pago por fora; o pedido duplicado anterior foi cancelado no Mercos. Decisão do comercial, 27/nov/2026.
+ */
+const ERRO_INTEGRACAO_CONTA_VENDA = new Set(["ES|13804"]);
+
+/**
  * Tipos de pedido que viram linha. ⚠️ `Sem saldo`, `Transferência de Estoque` e `Reenvio`
  * ficam fora — não são venda nem bonificação e nunca entraram no funil.
  */
@@ -274,7 +282,8 @@ export async function montarPipelineMercos(
     if (!filial) continue;                                         // SP não usa Mercos
     if (String(m.data_emissao ?? "") < corte) continue;
     if (String(m.status_pedido ?? "") !== "Concluído") continue;    // orçamento/cancelado fora
-    if (!STATUS_PIPELINE.has(String(m.status_personalizado ?? ""))) continue;
+    const forcado = ERRO_INTEGRACAO_CONTA_VENDA.has(`${regiao}|${String(m.numero_pedido ?? "").trim()}`);
+    if (!STATUS_PIPELINE.has(String(m.status_personalizado ?? "")) && !forcado) continue;
     if (!TIPOS_ACEITOS.has(String(m.tipo_pedido ?? ""))) continue;
 
     diag.firmes++;
@@ -297,7 +306,7 @@ export async function montarPipelineMercos(
     const status =
       (w && FASE_WMS_STATUS[String(w.situacao_fase ?? "")]) ||
       STATUS_MERCOS_TORRE[String(m.status_personalizado ?? "")] ||
-      "Em aberto";
+      (forcado ? "Em separação" : "Em aberto");
 
     // ⚠️ `quantidade` NÃO pode ser 0: `fato_pedidos` tem
     // `CHECK (quantidade <> 0)` e o transform descarta a linha ANTES de chegar ao banco.
