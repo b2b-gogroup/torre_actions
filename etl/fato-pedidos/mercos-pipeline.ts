@@ -104,6 +104,17 @@ const STATUS_PIPELINE = new Set([
 const ERRO_INTEGRACAO_CONTA_VENDA = new Set(["ES|13804"]);
 
 /**
+ * NOTA EMITIDA QUE AINDA NÃO CHEGOU NA TORRE (27/nov/2026, Ítalo). Quando a NF sai, o pedido some da lista
+ * de pedidos em aberto do Protheus, mas o card de FATURADOS (db 47) leva horas para trazer a nota — nesse
+ * meio-tempo o pedido não contava em lugar nenhum (caso de 27/nov: um pedido pago saiu da meta da vendedora por horas).
+ * Agora: status do Mercos "Faturado"/"Nota Integrada" com emissão nos últimos DIAS_NF_A_CHEGAR dias continua
+ * no pipeline como "Aguardando Faturamento". Não duplica: o `filterAlreadyInvoiced` do transform tira a
+ * linha assim que o card de faturados trouxer o mesmo `filial_pedido`.
+ */
+const STATUS_NF_EMITIDA = new Set(["Faturado", "Nota Integrada"]);
+const DIAS_NF_A_CHEGAR = 5;
+
+/**
  * Tipos de pedido que viram linha. ⚠️ `Sem saldo`, `Transferência de Estoque` e `Reenvio`
  * ficam fora — não são venda nem bonificação e nunca entraram no funil.
  */
@@ -220,6 +231,7 @@ export async function montarPipelineMercos(
     logger.info(`Pipeline Mercos: janela ${diasJanela}d → ${diasEfetivo}d (limite do diff-delete do Protheus)`);
   }
   const corte = new Date(Date.now() - diasEfetivo * 86_400_000).toISOString().slice(0, 10);
+  const corteNf = new Date(Date.now() - DIAS_NF_A_CHEGAR * 86_400_000).toISOString().slice(0, 10);
 
   const [mercos, cross, wms, itensCapturados] = await Promise.all([
     fetchSupabaseTable("mercos_vendas_detalhadas") as unknown as Promise<LinhaMercos[]>,
@@ -283,17 +295,18 @@ export async function montarPipelineMercos(
     if (String(m.data_emissao ?? "") < corte) continue;
     if (String(m.status_pedido ?? "") !== "Concluído") continue;    // orçamento/cancelado fora
     const forcado = ERRO_INTEGRACAO_CONTA_VENDA.has(`${regiao}|${String(m.numero_pedido ?? "").trim()}`);
-    if (!STATUS_PIPELINE.has(String(m.status_personalizado ?? "")) && !forcado) continue;
+    const nfAChegar = STATUS_NF_EMITIDA.has(String(m.status_personalizado ?? "")) && String(m.data_emissao ?? "") >= corteNf;
+    if (!STATUS_PIPELINE.has(String(m.status_personalizado ?? "")) && !forcado && !nfAChegar) continue;
     if (!TIPOS_ACEITOS.has(String(m.tipo_pedido ?? ""))) continue;
 
     diag.firmes++;
     const k = chave(regiao, m.numero_pedido);
 
     if (jaNoCard.has(k)) { diag.ja_no_card++; continue; }
-    if (faturadoNoProtheus.has(k)) { diag.removidos_protheus++; continue; }
+    if (faturadoNoProtheus.has(k) && !nfAChegar) { diag.removidos_protheus++; continue; }
 
     const w = faseWms.get(k);
-    if (w) {
+    if (w && !nfAChegar) {
       diag.com_fase_wms++;
       // Nota já saiu pelo WMS: o faturado entra pelo Protheus, com itens de verdade.
       if (FASE_WMS_JA_FATURADO.has(String(w.situacao_fase ?? "")) ||
@@ -304,6 +317,7 @@ export async function montarPipelineMercos(
     }
 
     const status =
+      (nfAChegar ? "Aguardando Faturamento" : null) ||
       (w && FASE_WMS_STATUS[String(w.situacao_fase ?? "")]) ||
       STATUS_MERCOS_TORRE[String(m.status_personalizado ?? "")] ||
       (forcado ? "Em separação" : "Em aberto");
