@@ -14,7 +14,30 @@ name: ETL produto-fotos (Shopify)
 
 on:
   schedule:
-    - cron: '0 9 * * *'   # 06h BRT (UTC-3)
+    # 8x/dia, de 3 em 3 horas (era 1x/dia, '0 9'). O job leva ~6s de ponta a ponta
+    # e o repo e publico -- Actions e gratis e ilimitado aqui (billable_ms = 0 nos
+    # runs medidos). Ou seja: a frequencia nao custa nada em cota.
+    #
+    # Minuto :23 de proposito, por dois motivos:
+    #   1) nenhum outro workflow deste repo usa :23 (em uso: :00 :17 :20 :30 :47),
+    #      entao este ETL nao sai junto com nenhum outro;
+    #   2) o topo da hora e o horario mais disputado do agendador do GitHub, que e
+    #      justamente quando ele mais atrasa (e as vezes descarta) o schedule.
+    #
+    # !! O HORARIO NOMINAL NAO SE CUMPRE NESTE REPO. Medido em 20-27/nov/2026: o
+    # evento `schedule` chega de 4h a 12h DEPOIS do cron -- o '0 9' que estava aqui
+    # disparava, na pratica, entre 15h40 e 21h03 UTC. Nao e fila de runner: nos runs
+    # inspecionados created_at == run_started_at, ou seja quem demora e a ENTREGA do
+    # evento pelo GitHub. workflow_dispatch, no mesmo repo, sai na hora.
+    # Logo, o que estas 8 entradas entregam e ~8 atualizacoes ESPALHADAS pelo dia,
+    # nao 8 horarios certos. Quem precisar de hora certa tem que usar gatilho externo
+    # (workflow_dispatch via PAT) ou `workflow_run` atras de outro workflow -- e o que
+    # o etl-mercos-obs.yml ja faz.
+    #
+    # !! Nao subir muito alem disto sem medir: a fonte e o metabase.gocase.com.br
+    # atras de Cloudflare, que em 23/nov/2026 devolveu pagina de bloqueio e derrubou
+    # o run (unica falha da serie). Mais frequencia = mais exposicao a esse bloqueio.
+    - cron: '23 */3 * * *'   # UTC 00/03/06/09/12/15/18/21 :23  ->  BRT 21/00/03/06/09/12/15/18 :23
   workflow_dispatch:       # trigger manual via UI
 
 concurrency:
