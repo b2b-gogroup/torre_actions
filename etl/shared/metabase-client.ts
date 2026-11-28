@@ -31,7 +31,8 @@ function getApiKey(): string {
  */
 export async function fetchMetabaseCard(
   cardId: number,
-  params?: Record<string, string>
+  params?: Record<string, string>,
+  maxAttempts?: number
 ): Promise<Record<string, unknown>[]> {
   // Metabase v0.64 (atualizado em 28/out/2026) passou a exigir `id` em cada parâmetro
   // (sem ele: 400 "Schema for a string that cannot be blank"). E o `id` tem de ser o
@@ -90,7 +91,7 @@ export async function fetchMetabaseCard(
       logger.info(`Metabase card ${cardId}: ${data.length} registros${filtro}`);
       return data;
     },
-    { ...RETRY_METABASE, label: `Metabase card ${cardId}` }
+    { ...RETRY_METABASE, ...(maxAttempts ? { maxAttempts } : {}), label: `Metabase card ${cardId}` }
   );
 }
 
