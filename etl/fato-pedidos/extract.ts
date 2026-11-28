@@ -155,6 +155,8 @@ export interface ExtractedData {
   tinyAPESPedidos: Record<string, unknown>[];
   tinyAPRJPedidos: Record<string, unknown>[];
   tinyAPSPPedidos: Record<string, unknown>[];
+  /** Card 19609 falhou e o intraday seguiu sem ele (ETL_PROTHEUS_FAT_OPCIONAL) — o load preserva o faturado Protheus do banco. */
+  protheusFatFalhou?: boolean;
   /** erp_origem cuja busca de pedidos abertos falhou neste run (ex.: "tiny_es") — ver load.ts. */
   abertosFalhou: string[];
   /** "erp:numero" de pedidos abertos cujo detalhe falhou — o load preserva o aberto antigo deles. */
@@ -195,10 +197,20 @@ export async function extractAll(): Promise<ExtractedData> {
     logger.info("Protheus: sem janela de data (full — espelha 2026 inteiro)");
   }
   const paramsFat = janela.dataInicial ? { data_inicial: janela.dataInicial } : undefined;
+  // 27/nov/2026 (Black Friday, RDS do Protheus com disco lento: card 19609 > 5 min): com
+  // ETL_PROTHEUS_FAT_OPCIONAL=true e SÓ no intraday, a falha do 19609 não aborta mais a carga —
+  // Tiny e Mercos entram e o load preserva o faturado Protheus que já está no banco (load.ts).
+  // 2 tentativas em vez de 6 para não segurar a carga ~35 min esperando o card.
+  // ETL_PROTHEUS_FAT_PULAR=true (pedido do Ítalo 27/nov, "até amanhã"): nem consulta o card no
+  // intraday — vai direto ao modo degradado. TEMPORÁRIO: desfazer em docs/etl/etl-fato-pedidos.md §6.1.
+  const fatPular = process.env.ETL_PROTHEUS_FAT_PULAR === "true" && janela.ativa;
+  const fatOpcional = (process.env.ETL_PROTHEUS_FAT_OPCIONAL === "true" || fatPular) && janela.ativa;
 
   const jobs: { name: SourceName; fn: () => Promise<unknown[]> }[] = [
     { name: "protheusTrat", fn: () => fetchMetabaseCard(CARDS.protheusTrat) },
-    { name: "protheusFat",  fn: () => fetchMetabaseCard(CARDS.protheusFat, paramsFat) },
+    { name: "protheusFat",  fn: () => fatPular
+        ? Promise.reject(new Error("pulado no intraday (ETL_PROTHEUS_FAT_PULAR)"))
+        : fetchMetabaseCard(CARDS.protheusFat, paramsFat, fatOpcional ? 2 : undefined) },
     { name: "protheusPedidos", fn: () => fetchMetabaseCard(CARDS.protheusPedidos) },
     { name: "hopPedidos", fn: () => fetchMetabaseCard(CARDS.hopPedidos) },
     { name: "hopTrat", fn: () => fetchMetabaseCard(CARDS.hopTrat) },
@@ -412,8 +424,16 @@ export async function extractAll(): Promise<ExtractedData> {
     // As outras sete continuam fatais em qualquer cenário — nenhuma tem fonte alternativa.
     const fatais = errors.filter((e) =>
       critical.some((c) => e.startsWith(c) && !supridoPorMercos.has(c as SourceName))
+      && !(fatOpcional && e.startsWith("protheusFat"))
     );
     if (fatais.length > 0) throw new Error(`Fontes críticas falharam: ${fatais.join("; ")}`);
+    if (fatOpcional && errors.some((e) => e.startsWith("protheusFat"))) {
+      (data as Record<string, unknown>).protheusFatFalhou = true;
+      logger.warn(
+        "MODO DEGRADADO (ETL_PROTHEUS_FAT_OPCIONAL): card 19609 falhou — carga segue com Tiny + Mercos; " +
+          "faturado Protheus do banco fica congelado (nada apagado) até o card voltar."
+      );
+    }
 
     // Falha crítica coberta pelo Mercos nunca passa calada: é degradação declarada, e o
     // dia em que o middleware voltar essa linha some sozinha do log.
