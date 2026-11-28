@@ -127,6 +127,7 @@ export interface LoadOptions {
   canceladasES?: string[];  // NF números canceladas Apice ES
   canceladasRJ?: string[];  // NF números canceladas Apice RJ
   abertosFalhou?: string[];  // erp_origem sem leitura de abertos neste run — não apagar os abertos deles
+  protheusFatFalhou?: boolean; // card 19609 falhou (modo degradado do intraday) — preservar o faturado Protheus do banco
   abertosDetalheFalhou?: string[];  // "erp:pedido" cujo detalhe falhou — não apagar o aberto antigo deles
   /**
    * Hora de início deste run do ETL — vira o carimbo de chegada em `fato_pedido_carga`.
@@ -143,10 +144,10 @@ export interface LoadOptions {
 export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}): Promise<LoadResult> {
   logger.group("Carga");
 
-  const unique = dedup(items);
+  let unique = dedup(items);
   logger.info(`Dedup: ${items.length} → ${unique.length} itens únicos`);
 
-  const batches = chunk(unique, BATCH_SIZE);
+  let batches = chunk(unique, BATCH_SIZE);
   logger.info(`${batches.length} batches de até ${BATCH_SIZE} itens`);
 
   const databaseUrl = process.env.DATABASE_URL;
@@ -173,6 +174,35 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
   });
   let batchesFailed = 0;
 
+  // Modo degradado do intraday (ETL_PROTHEUS_FAT_OPCIONAL, 27/nov/2026): sem o card 19609 o
+  // transform não consegue tirar do pipeline os pedidos Protheus que JÁ viraram NF
+  // (filterAlreadyInvoiced recebe lista vazia). Aqui o banco faz esse papel: pedido Protheus
+  // que já tem linha faturada em fato_pedidos não entra de novo como pipeline (senão o valor
+  // contaria duas vezes — faturado + em aberto).
+  const fatCongelado = opts.protheusFatFalhou === true;
+  if (fatCongelado) {
+    const c = await pool.connect();
+    try {
+      const r = await c.query(
+        `SELECT DISTINCT filial_id::text AS f, pedido_id AS p FROM fato_pedidos
+          WHERE erp_origem = 'protheus' AND lower(status) = 'faturado' AND excluido = false`
+      );
+      const jaFat = new Set(r.rows.map((x: { f: string; p: string }) => `${x.f}|${x.p}`));
+      const antes = unique.length;
+      unique = unique.filter((i) => !(
+        i.erp_origem === "protheus" && (i.status ?? "").toLowerCase() !== "faturado"
+        && jaFat.has(`${i.filial_id}|${i.pedido_id}`)
+      ));
+      batches = chunk(unique, BATCH_SIZE);
+      logger.warn(
+        `MODO DEGRADADO: faturado Protheus congelado (card 19609 fora). ` +
+          `${antes - unique.length} itens de pipeline Protheus já faturados no banco descartados.`
+      );
+    } finally {
+      c.release();
+    }
+  }
+
   try {
 
     // Guarda de sanidade: aborta ANTES do delete se o novo lote de Protheus/SP/BB
@@ -187,7 +217,7 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
     // = 30,4%, colado no limite de 30% (medido 28/jul/2026). Por isso, quando a janela
     // está ativa, o COUNT do banco é recortado pela mesma janela (por data de emissão,
     // que é o campo filtrado na origem). No full segue global.
-    {
+    if (!fatCongelado) {
       const janela = janelaProtheus();
       const novosFaturadosNaoTiny = unique.filter(
         (i) => !["tiny_es", "tiny_rj"].includes(i.erp_origem) && (i.status ?? "").toLowerCase() === "faturado"
@@ -284,6 +314,7 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
             `DELETE FROM fato_pedidos f
                WHERE COALESCE(f.data_faturamento_id, f.data_pedido_id) >= $1
                  AND f.erp_origem NOT IN ('tiny_es','tiny_rj','tiny_es_fix','tiny_rj_fix', 'tiny_sp', 'tiny_sp_fix','denavita_fix')
+                 ${fatCongelado ? "AND lower(f.status) <> 'faturado'" : ""}
                  AND NOT EXISTS (
                    SELECT 1 FROM _inc_keys k
                    WHERE k.erp_origem = f.erp_origem
@@ -313,6 +344,7 @@ export async function loadBatches(items: FatoPedidoRow[], opts: LoadOptions = {}
           DELETE FROM fato_pedidos
           WHERE COALESCE(data_faturamento_id, data_pedido_id) >= $1
             AND erp_origem NOT IN ('tiny_es', 'tiny_rj', 'tiny_es_fix', 'tiny_rj_fix', 'tiny_sp', 'tiny_sp_fix', 'denavita_fix')
+            ${fatCongelado ? "AND lower(status) <> 'faturado'" : ""}
         `, [protheusCorteInt]);
         logger.info(`DELETE fato_pedidos (Protheus/SP/BB) >= ${protheusCorteInt} concluído${skipModeProtheus ? ` (janela ${janelaProtheus().dias}d — intraday)` : " (full)"}`);
       }
