@@ -92,4 +92,9 @@ jobs:
           # Aumentar reflete deleção/retroativo antigo mais rápido, mas aproxima do timeout;
           # o que fica fora da janela é corrigido pelo full da manhã (sem janela).
           ETL_PROTHEUS_DIAS: "60"
+          # 🟠 TEMPORÁRIO (Black Friday 27/nov/2026): disco do RDS do Protheus saturado, card 19609 > 5 min.
+          # Intraday segue com Tiny + Mercos e congela o faturado Protheus. REMOVER as 2 linhas abaixo em 28/nov
+          # quando o card responder — roteiro em docs/etl/etl-fato-pedidos.md §6.1 (repo torre_b2b).
+          ETL_PROTHEUS_FAT_PULAR: "true"
+          ETL_PROTHEUS_FAT_OPCIONAL: "true"
         run: npx tsx fato-pedidos/index.ts
