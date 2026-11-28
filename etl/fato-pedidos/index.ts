@@ -55,6 +55,7 @@ async function main() {
       canceladasRJ: sources.tinyAPRJCanceladas as string[],
       abertosFalhou: sources.abertosFalhou,
       abertosDetalheFalhou: sources.abertosDetalheFalhou,
+      protheusFatFalhou: sources.protheusFatFalhou === true,
       cargaEm,
       cargaRun: cargaRun ?? undefined,
     });
